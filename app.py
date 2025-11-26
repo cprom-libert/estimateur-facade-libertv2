@@ -20,10 +20,92 @@ def init_state():
         st.session_state.lignes = []
     if "total" not in st.session_state:
         st.session_state.total = 0.0
+    if "last_geom" not in st.session_state:
+        st.session_state.last_geom = None
+
+
+def inject_global_style():
+    st.markdown(
+        """
+        <style>
+        /* Police plus sobre */
+        html, body, [class*="css"]  {
+            font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        }
+
+        /* Largeur du contenu */
+        .main .block-container {
+            max-width: 1100px;
+            padding-top: 2rem;
+            padding-bottom: 4rem;
+        }
+
+        /* Cartes "Apple-like" */
+        .lc-card {
+            background: #ffffff;
+            border-radius: 18px;
+            padding: 20px 22px;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.06);
+            border: 1px solid rgba(0,0,0,0.04);
+            margin-bottom: 18px;
+        }
+
+        .lc-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: rgba(0,0,0,0.04);
+            font-size: 0.8rem;
+            color: rgba(0,0,0,0.7);
+            margin-right: 6px;
+        }
+
+        .lc-stepper {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .lc-step {
+            flex: 1;
+            min-width: 120px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: rgba(0,0,0,0.035);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85rem;
+            color: rgba(0,0,0,0.55);
+        }
+
+        .lc-step.lc-step-active {
+            background: #000000;
+            color: #ffffff;
+            font-weight: 600;
+        }
+
+        .lc-step span {
+            margin-left: 6px;
+        }
+
+        /* Boutons Streamlit plus sobres */
+        button[kind="primary"] {
+            border-radius: 999px !important;
+            padding: 0.4rem 1.4rem !important;
+            font-weight: 500 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def main():
     st.set_page_config(page_title="Estimateur ravalement – Paris", layout="wide")
+    inject_global_style()
     init_state()
 
     google_api_key = st.secrets.get("GOOGLE_API_KEY")
@@ -31,40 +113,51 @@ def main():
     ui.render_title()
 
     step = st.session_state.step
+    ui.render_stepper(step)
 
     # ÉTAPE 0 : recherche adresse
     if step == 0:
         query = st.session_state.get("addr_query", "")
         suggestions = []
         if len(query.strip()) >= 3:
-            suggestions = get_address_suggestions(query)
+            try:
+                suggestions = get_address_suggestions(query)
+            except Exception as e:
+                st.error(f"Erreur lors de la recherche d’adresse : {e}")
 
-        addr_block = ui.render_address_block(suggestions)
+        with st.container():
+            st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+            addr_block = ui.render_address_block(suggestions)
+            col_btn = st.columns([1, 1, 2])[0]
+            with col_btn:
+                if st.button("Analyser le bâtiment", type="primary"):
+                    selected_obj = addr_block["selected_obj"]
+                    if not selected_obj:
+                        st.error("Merci de sélectionner une adresse dans la liste.")
+                    else:
+                        lat = selected_obj["lat"]
+                        lon = selected_obj["lon"]
+                        addr_label = selected_obj["label"]
 
-        if st.button("Analyser le bâtiment", type="primary"):
-            selected_obj = addr_block["selected_obj"]
-            if not selected_obj:
-                st.error("Merci de sélectionner une adresse dans la liste.")
-            else:
-                lat = selected_obj["lat"]
-                lon = selected_obj["lon"]
-                addr_label = selected_obj["label"]
+                        # Contexte OSM
+                        osm_ctx: Dict = {}
+                        try:
+                            osm_ctx = fetch_osm_context(lat, lon)
+                        except Exception as e:
+                            st.warning(f"Impossible de récupérer les données OSM : {e}")
+                            osm_ctx = {}
 
-                # Contexte OSM
-                osm_ctx: Dict = {}
-                try:
-                    osm_ctx = fetch_osm_context(lat, lon)
-                except Exception as e:
-                    st.warning(f"Impossible de récupérer les données OSM : {e}")
-                    osm_ctx = {}
+                        st.session_state.addr_label = addr_label
+                        st.session_state.coords = {"lat": lat, "lon": lon}
+                        st.session_state.osm_ctx = osm_ctx
+                        st.session_state.lignes = []
+                        st.session_state.total = 0.0
+                        st.session_state.last_geom = None
+                        st.session_state.step = 1
+                        st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
 
-                st.session_state.addr_label = addr_label
-                st.session_state.coords = {"lat": lat, "lon": lon}
-                st.session_state.osm_ctx = osm_ctx
-                st.session_state.step = 1
-                st.rerun()
-
-    # ÉTAPE 1 : rapport
+    # ÉTAPE 1 : vue Street View + réglages + rapport
     if st.session_state.step == 1:
         addr_label = st.session_state.addr_label
         coords = st.session_state.coords or {}
@@ -77,58 +170,65 @@ def main():
         lat = coords["lat"]
         lon = coords["lon"]
 
-        # Street View interactif
-        iframe_url = build_streetview_embed_url(lat, lon, google_api_key)
-        ui.render_streetview(lat, lon, iframe_url)
+        # Carte : Street View
+        st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+        ui.render_streetview(lat, lon, build_streetview_embed_url(lat, lon, google_api_key))
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        # Formulaires bâtiment + points singuliers
-        building_form = ui.render_building_form(osm_ctx)
-        points_form = ui.render_points_singuliers_form(osm_ctx)
+        # Carte : paramètres bâtiment + points singuliers
+        st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+        col_left, col_right = st.columns([1.2, 1])
 
-        if st.button("Calculer l’estimation", type="primary"):
-            geom = estimate_geometry(
-                building_type=building_form["building_type"],
-                niveaux=building_form["niveaux"],
-                largeur_facade=building_form["largeur"],
-            )
+        with col_left:
+            building_form = ui.render_building_form(osm_ctx)
 
-            porte_type = building_form["porte_type"]
-            options = points_form.copy()
-            options["porte_entree"] = porte_type == "Porte d’entrée"
-            options["porte_cochere"] = porte_type == "Porte cochère"
+        with col_right:
+            points_form = ui.render_points_singuliers_form(osm_ctx, building_form)
 
-            lignes, total = build_pricing(
-                geom=geom,
-                support_key=building_form["support_key"],
-                options=options,
-                facade_state=building_form["etat_facade"],
-            )
+        col_btn_calc, col_btn_new = st.columns([1, 1])
+        with col_btn_calc:
+            if st.button("Calculer l’estimation", type="primary"):
+                geom = estimate_geometry(
+                    building_type=building_form["building_type"],
+                    niveaux=building_form["niveaux"],
+                    largeur_facade=building_form["largeur"],
+                )
 
-            st.session_state.lignes = lignes
-            st.session_state.total = total
+                porte_type = building_form["porte_type"]
+                options = points_form.copy()
+                options["porte_entree"] = porte_type == "Porte d’entrée"
+                options["porte_cochere"] = porte_type == "Porte cochère"
 
-            ui.render_rapport_header(addr_label, geom)
-            ui.render_pricing_table(lignes, total)
+                lignes, total = build_pricing(
+                    geom=geom,
+                    support_key=building_form["support_key"],
+                    options=options,
+                    facade_state=building_form["etat_facade"],
+                )
 
-        # Si on a déjà un calcul en mémoire, on l’affiche
-        if st.session_state.lignes:
-            geom = estimate_geometry(
-                building_type=building_form["building_type"],
-                niveaux=building_form["niveaux"],
-                largeur_facade=building_form["largeur"],
-            )
-            ui.render_rapport_header(addr_label, geom)
-            ui.render_pricing_table(st.session_state.lignes, st.session_state.total)
+                st.session_state.lignes = lignes
+                st.session_state.total = total
+                st.session_state.last_geom = geom
 
-        if st.button("Nouvelle adresse"):
-            st.session_state.step = 0
-            st.session_state.addr_label = None
-            st.session_state.coords = None
-            st.session_state.osm_ctx = {}
-            st.session_state.lignes = []
-            st.session_state.total = 0.0
-            st.session_state.addr_query = ""
-            st.rerun()
+        with col_btn_new:
+            if st.button("Nouvelle adresse"):
+                st.session_state.step = 0
+                st.session_state.addr_label = None
+                st.session_state.coords = None
+                st.session_state.osm_ctx = {}
+                st.session_state.lignes = []
+                st.session_state.total = 0.0
+                st.session_state.last_geom = None
+                st.session_state.addr_query = ""
+                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Carte : rapport (uniquement si estimé)
+        if st.session_state.lignes and st.session_state.last_geom is not None:
+            st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+            ui.render_rapport(addr_label, st.session_state.last_geom, st.session_state.lignes, st.session_state.total)
+            st.markdown('</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
