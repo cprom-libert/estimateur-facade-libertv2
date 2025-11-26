@@ -160,46 +160,37 @@ def generate_pdf_estimation(
     contact: Dict,
 ) -> bytes | None:
     """
-    Génère un PDF récapitulatif.
-    On simplifie au maximum le texte (ASCII simple, pas de caractères spéciaux).
-    En cas d'erreur fpdf, on retourne None pour ne pas planter l'app.
+    Génère un PDF 100 % ASCII-safe.
+    Sécurisée contre tous les formats de sortie FPDF (bytes, bytearray, str).
     """
+
     try:
         from fpdf import FPDF, FPDFException
     except ImportError:
-        st.info("Module 'fpdf2' non installé : le PDF ne sera pas généré.")
+        st.info("Module 'fpdf2' non installé : PDF non généré.")
         return None
 
-    # Fonction utilitaire : texte compatible ASCII/latin-1, très simple
+    # --- Nettoyage ASCII ---
     def safe(text: str) -> str:
         if text is None:
             text = ""
-        # Remplacements des caractères problématiques
         repl = {
-            "–": "-",
-            "—": "-",
-            "•": "-",
-            "²": "2",
+            "–": "-", "—": "-", "•": "-", "·": "-",
+            "²": "2", "³": "3",
             "°": " deg",
             "€": "EUR",
-            "’": "'",
-            "“": '"',
-            "”": '"',
-            "«": '"',
-            "»": '"',
+            "’": "'", "‘": "'", "“": '"', "”": '"',
+            "«": '"', "»": '"',
             "…": "...",
-            "é": "e",
-            "è": "e",
-            "ê": "e",
-            "à": "a",
-            "ù": "u",
+            "é": "e", "è": "e", "ê": "e", "ë": "e",
+            "à": "a", "â": "a",
+            "ù": "u", "û": "u",
+            "î": "i", "ï": "i",
+            "ô": "o", "ö": "o",
             "ç": "c",
-            "ô": "o",
-            "î": "i",
         }
         for k, v in repl.items():
             text = text.replace(k, v)
-        # On limite à latin-1 pour être sûr
         return text.encode("latin-1", "replace").decode("latin-1")
 
     try:
@@ -208,31 +199,22 @@ def generate_pdf_estimation(
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 14)
 
-        titre = safe("Estimation de ravalement - Libert & Cie")
-        pdf.cell(190, 8, titre, ln=1)
+        pdf.cell(190, 8, safe("Estimation de ravalement - Libert & Cie"), ln=1)
 
         pdf.set_font("Helvetica", "", 11)
         pdf.ln(2)
 
-        # En-tête informations client
-        addr_txt = safe(f"Adresse : {addr_label}")
-        nom_txt = safe(f"Nom : {contact.get('nom','')}")
-        email_txt = safe(f"Email : {contact.get('email','')}")
-        tel_val = contact.get("tel")
-        tel_txt = safe(f"Telephone : {tel_val}") if tel_val else None
-
-        pdf.multi_cell(190, 6, addr_txt)
-        pdf.multi_cell(190, 6, nom_txt)
-        pdf.multi_cell(190, 6, email_txt)
-        if tel_txt:
-            pdf.multi_cell(190, 6, tel_txt)
+        # Données client
+        pdf.multi_cell(190, 6, safe(f"Adresse : {addr_label}"))
+        pdf.multi_cell(190, 6, safe(f"Nom : {contact.get('nom','')}"))
+        pdf.multi_cell(190, 6, safe(f"Email : {contact.get('email','')}"))
+        if contact.get("tel"):
+            pdf.multi_cell(190, 6, safe(f"Telephone : {contact.get('tel')}"))
 
         pdf.ln(3)
         pdf.multi_cell(190, 6, safe(f"Hauteur estimee : {geom.hauteur:.1f} m"))
-        pdf.multi_cell(190, 6, safe(f"Surface de facade : {geom.surface_facades:.1f} m2"))
-        pdf.multi_cell(
-            190, 6, safe(f"Delai souhaite : {urgency.get('delai_mois', '-') } mois")
-        )
+        pdf.multi_cell(190, 6, safe(f"Surface facades : {geom.surface_facades:.1f} m2"))
+        pdf.multi_cell(190, 6, safe(f"Delai souhaite : {urgency.get('delai_mois','-')} mois"))
 
         pdf.ln(4)
         pdf.set_font("Helvetica", "B", 12)
@@ -241,42 +223,48 @@ def generate_pdf_estimation(
         pdf.set_font("Helvetica", "", 10)
         pdf.ln(2)
         pdf.multi_cell(
-            190,
-            5,
-            safe(
-                "Cette estimation est donnee a titre indicatif et devra etre confirmee apres visite sur place."
-            ),
+            190, 5,
+            safe("Cette estimation est indicative et devra etre confirmee apres visite sur place.")
         )
 
         pdf.ln(6)
         pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(190, 7, safe("Detail par poste (indicatif)"), ln=1)
+        pdf.cell(190, 7, safe("Detail par poste"), ln=1)
         pdf.set_font("Helvetica", "", 9)
 
         for l in lignes:
-            lib = safe(str(l["designation"]))
-            q = l["quantite"]
-            u = l["unite"]
-            m = l["montant"]
-            ligne_txt = safe(f"- {lib} : {q} {u} - {m:.2f} EUR HT")
-            pdf.multi_cell(190, 5, ligne_txt)
+            txt = safe(f"- {l['designation']} : {l['quantite']} {l['unite']} - {l['montant']:.2f} EUR HT")
+            pdf.multi_cell(190, 5, txt)
 
-        # Sortie en bytes
-        pdf_str = pdf.output(dest="S")
-        if isinstance(pdf_str, bytes):
-            pdf_bytes = pdf_str
-        else:
-            pdf_bytes = pdf_str.encode("latin-1", "replace")
+        # --- Sortie PDF blindée ---
+        raw = pdf.output(dest="S")
 
-        return pdf_bytes
+        # 1) Si bytes → OK direct
+        if isinstance(raw, bytes):
+            return raw
+
+        # 2) Si bytearray → convertir
+        if isinstance(raw, bytearray):
+            return bytes(raw)
+
+        # 3) Si string → encoder
+        if isinstance(raw, str):
+            return raw.encode("latin-1", "replace")
+
+        # 4) Cas inattendu → convertir à la brute
+        try:
+            return bytes(raw)
+        except Exception:
+            pass
+
+        return None
 
     except FPDFException as e:
-        st.warning("Impossible de generer le PDF (limitation technique fpdf). L'estimation reste disponible par email.")
+        st.warning("Impossible de generer le PDF (FPDF). Estimation envoyee sans PDF.")
         return None
     except Exception as e:
-        st.warning(f"Erreur lors de la generation du PDF : {e}")
+        st.warning(f"Erreur PDF : {e}")
         return None
-
 
 
 # ----------------------------------------------------------------
