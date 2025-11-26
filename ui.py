@@ -1,4 +1,3 @@
-# ui.py
 from typing import Dict, List
 import streamlit as st
 import pandas as pd
@@ -18,7 +17,7 @@ def render_title():
 
 
 def render_stepper(step: int):
-    # step : 0 = Adresse, 1 = Bâtiment, 2 = Coordonnées & estimation
+    # 0 = Adresse, 1 = Dimensions, 2 = État façade, 3 = Points singuliers / urgence, 4 = Coordonnées & estimation
     st.markdown(
         f"""
         <div class="lc-stepper">
@@ -26,15 +25,24 @@ def render_stepper(step: int):
                 <span>1. Adresse</span>
             </div>
             <div class="lc-step {'lc-step-active' if step == 1 else ''}">
-                <span>2. Bâtiment</span>
+                <span>2. Hauteur & largeur</span>
             </div>
             <div class="lc-step {'lc-step-active' if step == 2 else ''}">
-                <span>3. Coordonnées & estimation</span>
+                <span>3. État de la façade</span>
+            </div>
+            <div class="lc-step {'lc-step-active' if step == 3 else ''}">
+                <span>4. Points singuliers & urgence</span>
+            </div>
+            <div class="lc-step {'lc-step-active' if step == 4 else ''}">
+                <span>5. Coordonnées & estimation</span>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+# --- ÉTAPE 0 : ADRESSE ---
 
 
 def render_address_block(
@@ -88,13 +96,16 @@ def render_streetview(lat: float, lon: float, iframe_url: str):
     else:
         st.image(
             iframe_url,
-            use_column_width=True,
+            use_container_width=True,
             caption="Vue générique (clé Google Maps absente ou non autorisée).",
         )
 
 
-def render_building_form(osm_ctx: Dict) -> Dict:
-    st.markdown("#### Bâtiment")
+# --- ÉTAPE 1 : DIMENSIONS (TYPE / NIVEAUX / LARGEUR) ---
+
+
+def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
+    st.markdown("#### Bâtiment – dimensions")
 
     default_levels = osm_ctx.get("levels") or 5
 
@@ -127,10 +138,48 @@ def render_building_form(osm_ctx: Dict) -> Dict:
         value=int(default_levels),
         step=1,
         key="niveaux",
+        help="Nombre d’étages au-dessus du rez-de-chaussée.",
     )
 
+    hauteur_par_niveau = st.number_input(
+        "Hauteur moyenne par niveau (m)",
+        min_value=2.5,
+        max_value=4.0,
+        value=3.0,
+        step=0.1,
+        key="hauteur_par_niveau",
+    )
+
+    largeur = st.number_input(
+        "Largeur de la façade principale (m)",
+        min_value=3.0,
+        max_value=80.0,
+        value=15.0,
+        step=0.5,
+        key="largeur",
+    )
+
+    hauteur_estimee = niveaux * hauteur_par_niveau
+
+    st.caption(f"Hauteur totale estimée : environ {hauteur_estimee:.1f} m (à partir des niveaux renseignés).")
+
+    return {
+        "building_type": building_type,
+        "support_key": support_key,
+        "niveaux": niveaux,
+        "largeur": largeur,
+        "hauteur_par_niveau": hauteur_par_niveau,
+    }
+
+
+# --- ÉTAPE 2 : ÉTAT FAÇADE / PORTE ---
+
+
+def render_facade_state_form() -> Dict:
+    st.markdown("#### État de la façade et entrée")
+
     etat_label = st.selectbox(
-        "État de la façade",
+        "État général de la façade",
         ["Bon", "Moyen", "Dégradé"],
         index=1,
         key="etat_facade_label",
@@ -143,15 +192,6 @@ def render_building_form(osm_ctx: Dict) -> Dict:
     else:
         etat_facade = "MOYEN"
 
-    largeur = st.number_input(
-        "Largeur de la façade principale (m)",
-        min_value=3.0,
-        max_value=80.0,
-        value=15.0,
-        step=0.5,
-        key="largeur",
-    )
-
     porte_type = st.selectbox(
         "Porte principale sur rue",
         ["Aucune", "Porte d’entrée", "Porte cochère"],
@@ -160,21 +200,21 @@ def render_building_form(osm_ctx: Dict) -> Dict:
     )
 
     return {
-        "building_type": building_type,
-        "support_key": support_key,
-        "niveaux": niveaux,
-        "largeur": largeur,
-        "porte_type": porte_type,
         "etat_facade": etat_facade,
+        "etat_facade_label": etat_label,
+        "porte_type": porte_type,
     }
 
 
-def render_points_singuliers_form(osm_ctx: Dict, building_form: Dict) -> Dict:
+# --- ÉTAPE 3 : POINTS SINGULIERS + URGENCE ---
+
+
+def render_points_singuliers_form(osm_ctx: Dict, building_dims: Dict) -> Dict:
     st.markdown("#### Points singuliers de façade")
 
     default_commerce = bool(osm_ctx.get("has_shop"))
-    largeur = float(building_form.get("largeur") or 0.0)
-    niveaux = int(building_form.get("niveaux") or 1)
+    largeur = float(building_dims.get("largeur") or 0.0)
+    niveaux = int(building_dims.get("niveaux") or 1)
 
     default_lg_gc = round(0.5 * largeur * niveaux, 1) if largeur > 0 else 0.0
     default_nb_desc = max(1, int(round(largeur / 6))) if largeur > 0 else 2
@@ -199,14 +239,14 @@ def render_points_singuliers_form(osm_ctx: Dict, building_form: Dict) -> Dict:
         )
         has_gardes_corps = st.checkbox(
             "Garde-corps métalliques sur façade",
-            value=True if building_form.get("building_type") == "IMMEUBLE" else False,
+            value=True if building_dims.get("building_type") == "IMMEUBLE" else False,
             key="has_gardes_corps",
         )
 
     with c2:
         has_toiture_debord = st.checkbox(
             "Débords de toit / avancées",
-            value=True if building_form.get("building_type") == "PAVILLON" else False,
+            value=True if building_dims.get("building_type") == "PAVILLON" else False,
             key="has_toiture_debord",
         )
         has_acroteres = st.checkbox(
@@ -251,6 +291,34 @@ def render_points_singuliers_form(osm_ctx: Dict, building_form: Dict) -> Dict:
     }
 
 
+def render_urgency_form() -> Dict:
+    st.markdown("#### Urgence du projet")
+
+    delai_mois = st.number_input(
+        "Idéalement, sous combien de mois souhaitez-vous réaliser les travaux ?",
+        min_value=1,
+        max_value=36,
+        value=6,
+        step=1,
+        key="delai_mois",
+    )
+
+    urgent = delai_mois <= 3
+
+    if urgent:
+        st.caption("Projet à court terme. Nous vous recontacterons rapidement.")
+    else:
+        st.caption("Projet à moyen terme. L’estimation vous permet de vous projeter.")
+
+    return {
+        "delai_mois": int(delai_mois),
+        "urgent": urgent,
+    }
+
+
+# --- ÉTAPE 4 : COORDONNÉES ---
+
+
 def render_contact_form() -> Dict:
     st.markdown("#### Vos coordonnées")
 
@@ -282,7 +350,10 @@ def render_contact_form() -> Dict:
     }
 
 
-def render_rapport_header(addr_label: str, geom: Geometry):
+# --- RAPPORT ---
+
+
+def render_rapport_header(addr_label: str, geom: Geometry, urgency: Dict | None = None):
     st.markdown(
         f"""
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.8rem;">
@@ -295,13 +366,22 @@ def render_rapport_header(addr_label: str, geom: Geometry):
         unsafe_allow_html=True,
     )
 
+    chips_html = (
+        f"""
+        <div class="lc-chip">Hauteur estimée : {geom.hauteur:.1f} m</div>
+        <div class="lc-chip">Surface façades : {geom.surface_facades:.1f} m²</div>
+        <div class="lc-chip">Périmètre : {geom.perimetre:.1f} ml</div>
+        <div class="lc-chip">Façades prises en compte : {geom.nb_facades}</div>
+        """
+    )
+
+    if urgency:
+        chips_html += f'<div class="lc-chip">Délai souhaité : {urgency["delai_mois"]} mois</div>'
+
     st.markdown(
         f"""
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;margin-bottom:10px;">
-            <div class="lc-chip">Hauteur estimée : {geom.hauteur:.1f} m</div>
-            <div class="lc-chip">Surface façades : {geom.surface_facades:.1f} m²</div>
-            <div class="lc-chip">Périmètre : {geom.perimetre:.1f} ml</div>
-            <div class="lc-chip">Façades prises en compte : {geom.nb_facades}</div>
+            {chips_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -345,6 +425,6 @@ def render_pricing_table(lignes: List[Dict], total: float):
     )
 
 
-def render_rapport(addr_label: str, geom: Geometry, lignes: List[Dict], total: float):
-    render_rapport_header(addr_label, geom)
+def render_rapport(addr_label: str, geom: Geometry, lignes: List[Dict], total: float, urgency: Dict | None = None):
+    render_rapport_header(addr_label, geom, urgency)
     render_pricing_table(lignes, total)

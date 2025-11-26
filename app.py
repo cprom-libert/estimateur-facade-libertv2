@@ -1,9 +1,10 @@
-# app.py
 import streamlit as st
-from typing import Dict
+from typing import Dict, Optional
+import smtplib
+from email.message import EmailMessage
 
 from apis import get_address_suggestions, fetch_osm_context, build_streetview_embed_url
-from pricing import estimate_geometry, build_pricing
+from pricing import estimate_geometry, build_pricing, NIVEAU_HAUTEUR, Geometry
 import ui
 
 
@@ -22,16 +23,19 @@ def init_state():
         st.session_state.total = 0.0
     if "last_geom" not in st.session_state:
         st.session_state.last_geom = None
-    if "form_building" not in st.session_state:
-        st.session_state.form_building = None
-    if "form_points" not in st.session_state:
-        st.session_state.form_points = None
+    if "building_dims" not in st.session_state:
+        st.session_state.building_dims = None
+    if "facade_state" not in st.session_state:
+        st.session_state.facade_state = None
+    if "points_form" not in st.session_state:
+        st.session_state.points_form = None
+    if "urgency" not in st.session_state:
+        st.session_state.urgency = None
     if "contact" not in st.session_state:
         st.session_state.contact = None
 
 
 def inject_global_style():
-    # Palette inspirée de Libert & Cie : fond légèrement chaud, bleu profond + accent terracotta.
     st.markdown(
         """
         <style>
@@ -123,6 +127,60 @@ def inject_global_style():
     )
 
 
+def send_notification_email(
+    to_email: str,
+    prospect_email: str,
+    prospect_nom: str,
+    addr_label: str,
+    geom: Geometry,
+    total: float,
+    urgency: Dict,
+):
+    host = st.secrets.get("SMTP_HOST")
+    port = st.secrets.get("SMTP_PORT")
+    user = st.secrets.get("SMTP_USER")
+    password = st.secrets.get("SMTP_PASSWORD")
+    use_tls = st.secrets.get("SMTP_USE_TLS", True)
+
+    if not host or not port or not user or not password:
+        st.info(
+            "L’estimation a été réalisée. L’envoi automatique d’e-mail n’est pas configuré (paramètres SMTP manquants)."
+        )
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Nouvelle estimation ravalement – {addr_label}"
+    msg["From"] = user
+    msg["To"] = to_email
+
+    corps = f"""Nouvelle demande d'estimation ravalement
+
+Adresse : {addr_label}
+Nom / société : {prospect_nom or 'Non renseigné'}
+Email prospect : {prospect_email}
+Hauteur estimée : {geom.hauteur:.1f} m
+Surface façades : {geom.surface_facades:.1f} m²
+Périmètre développé : {geom.perimetre:.1f} ml
+Total estimatif HT : {total:,.2f} €
+
+Délai souhaité avant travaux : {urgency['delai_mois']} mois
+Projet urgent (< =3 mois) : {"Oui" if urgency.get("urgent") else "Non"}
+
+Vous pouvez recontacter le prospect pour affiner le projet et proposer une visite.
+"""
+    msg.set_content(corps)
+
+    try:
+        with smtplib.SMTP(host, int(port)) as server:
+            if use_tls:
+                server.starttls()
+            server.login(user, password)
+            server.send_message(msg)
+        st.success("Votre demande a bien été enregistrée. Nous vous recontacterons rapidement.")
+    except Exception as e:
+        st.warning(f"Estimation réalisée, mais l’envoi de l’e-mail n’a pas abouti ({e}).")
+
+
 def main():
     st.set_page_config(page_title="Estimateur ravalement – Paris", layout="wide")
     inject_global_style()
@@ -135,7 +193,7 @@ def main():
     step = st.session_state.step
     ui.render_stepper(step)
 
-    # ÉTAPE 0 : recherche adresse
+    # ÉTAPE 0 : adresse
     if step == 0:
         query = st.session_state.get("addr_query", "")
         suggestions = []
@@ -170,17 +228,22 @@ def main():
                     st.session_state.addr_label = addr_label
                     st.session_state.coords = {"lat": lat, "lon": lon}
                     st.session_state.osm_ctx = osm_ctx
+
+                    # Reset des formulaires
                     st.session_state.lignes = []
                     st.session_state.total = 0.0
                     st.session_state.last_geom = None
-                    st.session_state.form_building = None
-                    st.session_state.form_points = None
+                    st.session_state.building_dims = None
+                    st.session_state.facade_state = None
+                    st.session_state.points_form = None
+                    st.session_state.urgency = None
                     st.session_state.contact = None
+
                     st.session_state.step = 1
                     st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ÉTAPE 1 : vue Street View + réglages bâtiment/points singuliers
+    # ÉTAPE 1 : dimensions (type, niveaux, hauteur/niveau, largeur)
     if st.session_state.step == 1:
         addr_label = st.session_state.addr_label
         coords = st.session_state.coords or {}
@@ -190,94 +253,152 @@ def main():
             st.session_state.step = 0
             st.rerun()
 
+        # Street View pour aider à valider les dimensions
+        st.markdown('<div class="lc-card">', unsafe_allow_html=True)
         lat = coords["lat"]
         lon = coords["lon"]
-
-        # Carte : Street View
-        st.markdown('<div class="lc-card">', unsafe_allow_html=True)
         iframe_url = build_streetview_embed_url(lat, lon, google_api_key)
         ui.render_streetview(lat, lon, iframe_url)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Carte : paramètres bâtiment + points singuliers
+        # Formulaire dimensions
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
-        col_left, col_right = st.columns([1.2, 1])
+        building_dims = ui.render_building_dimensions_form(osm_ctx)
 
-        with col_left:
-            building_form = ui.render_building_form(osm_ctx)
-
-        with col_right:
-            points_form = ui.render_points_singuliers_form(osm_ctx, building_form)
-
-        col_btn_next, col_btn_new = st.columns([1, 1])
-
-        with col_btn_next:
-            # On ne calcule pas encore ici, on passe à l’étape coordonnées
-            if st.button("Étape suivante : coordonnées", type="primary"):
-                st.session_state.form_building = building_form
-                st.session_state.form_points = points_form
+        col_next, col_back = st.columns([1, 1])
+        with col_next:
+            if st.button("Étape suivante : état de la façade", type="primary"):
+                st.session_state.building_dims = building_dims
                 st.session_state.step = 2
                 st.rerun()
-
-        with col_btn_new:
-            if st.button("Nouvelle adresse"):
+        with col_back:
+            if st.button("Revenir à l’adresse"):
                 st.session_state.step = 0
-                st.session_state.addr_label = None
-                st.session_state.coords = None
-                st.session_state.osm_ctx = {}
-                st.session_state.lignes = []
-                st.session_state.total = 0.0
-                st.session_state.last_geom = None
-                st.session_state.form_building = None
-                st.session_state.form_points = None
-                st.session_state.contact = None
-                st.session_state.addr_query = ""
                 st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ÉTAPE 2 : coordonnées + calcul + rapport
+    # ÉTAPE 2 : état façade / porte
     if st.session_state.step == 2:
-        addr_label = st.session_state.addr_label
-        coords = st.session_state.coords or {}
-        if not addr_label or not coords or not st.session_state.form_building or not st.session_state.form_points:
-            # Sécurité : si on arrive ici sans données, on revient à l’étape 0
-            st.session_state.step = 0
+        if not st.session_state.building_dims:
+            st.session_state.step = 1
             st.rerun()
 
-        building_form = st.session_state.form_building
-        points_form = st.session_state.form_points
+        st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+        facade_state = ui.render_facade_state_form()
+
+        col_next, col_back = st.columns([1, 1])
+        with col_next:
+            if st.button("Étape suivante : points singuliers & urgence", type="primary"):
+                st.session_state.facade_state = facade_state
+                st.session_state.step = 3
+                st.rerun()
+        with col_back:
+            if st.button("Étape précédente : dimensions"):
+                st.session_state.step = 1
+                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # ÉTAPE 3 : points singuliers + urgence
+    if st.session_state.step == 3:
+        if not st.session_state.building_dims or not st.session_state.facade_state:
+            st.session_state.step = 1
+            st.rerun()
+
+        osm_ctx = st.session_state.osm_ctx or {}
+        building_dims = st.session_state.building_dims
+
+        st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+        col_left, col_right = st.columns([1.2, 1])
+
+        with col_left:
+            points_form = ui.render_points_singuliers_form(osm_ctx, building_dims)
+
+        with col_right:
+            urgency = ui.render_urgency_form()
+
+        col_next, col_back = st.columns([1, 1])
+        with col_next:
+            if st.button("Étape suivante : coordonnées", type="primary"):
+                st.session_state.points_form = points_form
+                st.session_state.urgency = urgency
+                st.session_state.step = 4
+                st.rerun()
+        with col_back:
+            if st.button("Étape précédente : état de la façade"):
+                st.session_state.step = 2
+                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # ÉTAPE 4 : coordonnées + calcul + rapport + mail
+    if st.session_state.step == 4:
+        if not (st.session_state.building_dims and st.session_state.facade_state and st.session_state.points_form):
+            st.session_state.step = 1
+            st.rerun()
+
+        addr_label = st.session_state.addr_label
+        building_dims = st.session_state.building_dims
+        facade_state = st.session_state.facade_state
+        points_form = st.session_state.points_form
+        urgency = st.session_state.urgency or {"delai_mois": 6, "urgent": False}
 
         # Carte coordonnées
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
         contact = ui.render_contact_form()
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Quand l’email est validé, on calcule et on affiche le rapport
+        # Quand l’email est valide, on calcule et on envoie la notif
         if contact["submitted"]:
             st.session_state.contact = contact
 
-            geom = estimate_geometry(
-                building_type=building_form["building_type"],
-                niveaux=building_form["niveaux"],
-                largeur_facade=building_form["largeur"],
+            # Géométrie (on utilise la hauteur par niveau saisie dans building_dims)
+            niveaux = building_dims["niveaux"]
+            hauteur_par_niveau = building_dims["hauteur_par_niveau"]
+            largeur = building_dims["largeur"]
+            building_type = building_dims["building_type"]
+
+            # On reconstruit Geometry en utilisant la hauteur ajustée
+            hauteur = max(1, niveaux) * hauteur_par_niveau
+            nb_facades = 4 if building_type.upper().startswith("PAVILLON") else 1
+            perimetre = largeur * nb_facades
+            surface_facades = hauteur * perimetre
+            geom = Geometry(
+                hauteur=hauteur,
+                surface_facades=surface_facades,
+                perimetre=perimetre,
+                nb_facades=nb_facades,
             )
 
-            porte_type = building_form["porte_type"]
+            porte_type = facade_state["porte_type"]
             options = points_form.copy()
             options["porte_entree"] = porte_type == "Porte d’entrée"
             options["porte_cochere"] = porte_type == "Porte cochère"
 
             lignes, total = build_pricing(
                 geom=geom,
-                support_key=building_form["support_key"],
+                support_key=building_dims["support_key"],
                 options=options,
-                facade_state=building_form["etat_facade"],
+                facade_state=facade_state["etat_facade"],
             )
 
             st.session_state.lignes = lignes
             st.session_state.total = total
             st.session_state.last_geom = geom
+
+            # Notification par mail à Libert & Cie
+            prospect_email = contact["email"]
+            prospect_nom = contact["nom"]
+            send_notification_email(
+                to_email="contact@libertsas.fr",
+                prospect_email=prospect_email,
+                prospect_nom=prospect_nom,
+                addr_label=addr_label,
+                geom=geom,
+                total=total,
+                urgency=urgency,
+            )
 
         # Carte rapport si calcul déjà fait
         if st.session_state.lignes and st.session_state.last_geom is not None:
@@ -287,6 +408,7 @@ def main():
                 st.session_state.last_geom,
                 st.session_state.lignes,
                 st.session_state.total,
+                st.session_state.urgency,
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -294,8 +416,8 @@ def main():
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
         col_back, col_new = st.columns([1, 1])
         with col_back:
-            if st.button("Retour étape bâtiment"):
-                st.session_state.step = 1
+            if st.button("Retour étapes précédentes"):
+                st.session_state.step = 3
                 st.rerun()
         with col_new:
             if st.button("Nouvelle adresse"):
@@ -306,8 +428,10 @@ def main():
                 st.session_state.lignes = []
                 st.session_state.total = 0.0
                 st.session_state.last_geom = None
-                st.session_state.form_building = None
-                st.session_state.form_points = None
+                st.session_state.building_dims = None
+                st.session_state.facade_state = None
+                st.session_state.points_form = None
+                st.session_state.urgency = None
                 st.session_state.contact = None
                 st.session_state.addr_query = ""
                 st.rerun()
