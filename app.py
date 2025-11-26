@@ -1,6 +1,7 @@
 import streamlit as st
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import smtplib
+from io import BytesIO
 from email.message import EmailMessage
 
 from apis import (
@@ -10,6 +11,7 @@ from apis import (
 )
 from pricing import estimate_geometry, build_pricing, NIVEAU_HAUTEUR, Geometry
 import ui
+from email_templates import html_mail_prospect, text_mail_prospect
 
 
 # ----------------------------------------------------------------
@@ -30,6 +32,7 @@ def init_state():
         "points_form": None,
         "urgency": None,
         "contact": None,
+        "pdf_bytes": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -37,72 +40,105 @@ def init_state():
 
 
 def inject_global_style():
+    dark = st.session_state.get("dark_mode", False)
+
+    if dark:
+        bg = "#0f172a"
+        primary = "#e5e7eb"
+        accent = "#f97316"
+        card_bg = "#020617"
+        text_muted = "rgba(249,250,251,0.75)"
+        border_col = "rgba(148,163,184,0.4)"
+    else:
+        bg = "#f5f2ee"
+        primary = "#1e2a3b"
+        accent = "#c56a3a"
+        card_bg = "#ffffff"
+        text_muted = "rgba(0,0,0,0.60)"
+        border_col = "rgba(0,0,0,0.04)"
+
     st.markdown(
-        """
+        f"""
         <style>
-        :root {
-            --lc-primary:#1e2a3b;
-            --lc-accent:#c56a3a;
-            --lc-bg:#f5f2ee;
-        }
-        html, body, [class*="css"]  {
+        :root {{
+            --lc-primary:{primary};
+            --lc-accent:{accent};
+            --lc-bg:{bg};
+        }}
+        html, body, [class*="css"]  {{
             font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-        }
-        body { background-color: var(--lc-bg); }
-        .main .block-container {
+        }}
+        body {{
+            background-color: var(--lc-bg);
+        }}
+        .main .block-container {{
             max-width: 1100px;
-            padding-top: 1.2rem;
+            padding-top: 1.0rem;
             padding-bottom: 4rem;
-        }
-        .lc-card {
-            background:#ffffff;
+        }}
+        .lc-card {{
+            background:{card_bg};
             border-radius:18px;
             padding:20px 22px;
             box-shadow:0 12px 30px rgba(0,0,0,0.06);
-            border:1px solid rgba(0,0,0,0.04);
+            border:1px solid {border_col};
             margin-bottom:18px;
-        }
-        .lc-chip {
+        }}
+        .lc-chip {{
             display:inline-flex;
             align-items:center;
             padding:4px 12px;
             border-radius:999px;
             background:rgba(197,106,58,0.07);
             font-size:0.8rem;
-            color:rgba(0,0,0,0.7);
+            color:{text_muted};
             margin-right:6px;
-        }
-        .lc-stepper {
+        }}
+        .lc-stepper {{
             display:flex;
             gap:10px;
             margin-bottom:20px;
             flex-wrap:wrap;
-        }
-        .lc-step {
+        }}
+        .lc-step {{
             flex:1;
             min-width:120px;
             padding:8px 12px;
             border-radius:999px;
-            background:rgba(0,0,0,0.03);
+            background:rgba(0,0,0,0.06);
             display:flex;
             align-items:center;
             justify-content:center;
             font-size:0.85rem;
-            color:rgba(0,0,0,0.55);
-        }
-        .lc-step.lc-step-active {
+            color:{text_muted};
+        }}
+        .lc-step.lc-step-active {{
             background:var(--lc-primary);
             color:#ffffff;
             font-weight:600;
-        }
-        button[kind="primary"] {
+        }}
+        button[kind="primary"] {{
             border-radius:999px !important;
             padding:0.4rem 1.4rem !important;
             font-weight:500 !important;
             background-color:var(--lc-accent) !important;
             border-color:var(--lc-accent) !important;
             color:#ffffff !important;
-        }
+        }}
+
+        @media (max-width: 768px) {{
+            .main .block-container {{
+                padding-left:0.6rem;
+                padding-right:0.6rem;
+            }}
+            .lc-card {{
+                padding:16px 14px;
+                border-radius:14px;
+            }}
+            .lc-stepper {{
+                flex-direction:column;
+            }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -110,7 +146,72 @@ def inject_global_style():
 
 
 # ----------------------------------------------------------------
-#                 ENVOI D’EMAIL (prospect + interne)
+#              GÉNÉRATION DU PDF (prospect + interne)
+# ----------------------------------------------------------------
+
+def generate_pdf_estimation(
+    addr_label: str,
+    geom: Geometry,
+    lignes: List[Dict],
+    total: float,
+    urgency: Dict,
+    contact: Dict,
+) -> Optional[bytes]:
+    """Génère un PDF récapitulatif (nécessite fpdf2)."""
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        st.info("Module 'fpdf2' non installé : le PDF ne sera pas généré.")
+        return None
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "Estimation de ravalement – Libert & Cie", ln=1)
+
+    pdf.set_font("Helvetica", "", 11)
+    pdf.ln(2)
+    pdf.multi_cell(0, 6, f"Adresse : {addr_label}")
+    pdf.multi_cell(0, 6, f"Nom : {contact.get('nom','')}")
+    pdf.multi_cell(0, 6, f"Email : {contact.get('email','')}")
+    if contact.get("tel"):
+        pdf.multi_cell(0, 6, f"Téléphone : {contact.get('tel')}")
+
+    pdf.ln(3)
+    pdf.multi_cell(0, 6, f"Hauteur estimée : {geom.hauteur:.1f} m")
+    pdf.multi_cell(0, 6, f"Surface de façades : {geom.surface_facades:.1f} m²")
+    pdf.multi_cell(0, 6, f"Délai souhaité : {urgency.get('delai_mois','-')} mois")
+
+    pdf.ln(4)
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.multi_cell(0, 7, f"Montant indicatif : {total:,.2f} € HT")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.ln(2)
+    pdf.multi_cell(
+        0,
+        5,
+        "Cette estimation est donnée à titre indicatif et devra être confirmée après visite sur place.",
+    )
+
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 7, "Détail par poste (indicatif)", ln=1)
+    pdf.set_font("Helvetica", "", 9)
+
+    for l in lignes:
+        pdf.multi_cell(
+            0,
+            5,
+            f"- {l['designation']} : {l['quantite']} {l['unite']} – {l['montant']:,.2f} € HT",
+        )
+
+    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    return pdf_bytes
+
+
+# ----------------------------------------------------------------
+#            ENVOI D’EMAIL (HTML + PDF, prospect + interne)
 # ----------------------------------------------------------------
 
 def send_notification_email(
@@ -121,84 +222,123 @@ def send_notification_email(
     geom: Geometry,
     total: float,
     urgency: Dict,
+    contact: Dict,
+    pdf_bytes: Optional[bytes] = None,
 ):
-    """ Envoie 2 mails : interne + prospect """
+    """
+    Envoie :
+      • un mail HTML premium au prospect (avec logo si LOGO_URL présent),
+      • une copie BCC à to_email (ex : contact@libertsas.fr),
+      • un mail interne séparé à to_email,
+      • attache le PDF d’estimation aux deux mails si disponible.
+    """
 
     host = st.secrets.get("SMTP_HOST")
     port = st.secrets.get("SMTP_PORT")
     user = st.secrets.get("SMTP_USER")
     password = st.secrets.get("SMTP_PASSWORD")
     use_tls = st.secrets.get("SMTP_USE_TLS", True)
+    logo_url = st.secrets.get("LOGO_URL", None)
 
     if not all([host, port, user, password]):
-        st.info("Paramètres SMTP manquants : e-mails non envoyés.")
+        st.info("Paramètres SMTP incomplets : e-mail non envoyé.")
         return
 
-    # ---------- MAIL INTERNE ----------
-    msg_admin = EmailMessage()
-    msg_admin["Subject"] = f"Nouvelle estimation ravalement – {addr_label}"
-    msg_admin["From"] = user
-    msg_admin["To"] = to_email
+    telephone = contact.get("tel", "")
+    note = contact.get("note", "")
 
-    corps_admin = f"""
-Nouvelle estimation de ravalement
+    # -------- MAIL PROSPECT (HTML + texte) --------
+    html_prospect = html_mail_prospect(
+        prospect_nom=prospect_nom,
+        prospect_email=prospect_email,
+        telephone=telephone,
+        note=note,
+        addr_label=addr_label,
+        hauteur=geom.hauteur,
+        surface=geom.surface_facades,
+        delai_mois=urgency["delai_mois"],
+        urgent=urgency.get("urgent", False),
+        total=total,
+        logo_url=logo_url,
+    )
 
-Adresse : {addr_label}
-Nom / Société : {prospect_nom or 'Non renseigné'}
-Email prospect : {prospect_email}
+    text_prospect = text_mail_prospect(
+        prospect_nom=prospect_nom,
+        prospect_email=prospect_email,
+        telephone=telephone,
+        note=note,
+        addr_label=addr_label,
+        hauteur=geom.hauteur,
+        surface=geom.surface_facades,
+        delai_mois=urgency["delai_mois"],
+        urgent=urgency.get("urgent", False),
+        total=total,
+    )
 
-Hauteur estimée : {geom.hauteur:.1f} m
-Surface façades : {geom.surface_facades:.1f} m²
-Périmètre développé : {geom.perimetre:.1f} ml
-
-Total estimatif HT : {total:,.2f} €
-
-Délai souhaité : {urgency['delai_mois']} mois
-Projet urgent : {"Oui" if urgency.get("urgent") else "Non"}
-"""
-    msg_admin.set_content(corps_admin)
-
-    # ---------- MAIL PROSPECT ----------
     msg_client = EmailMessage()
     msg_client["Subject"] = "Votre estimation de ravalement – Libert & Cie"
     msg_client["From"] = user
     msg_client["To"] = prospect_email
+    msg_client["Bcc"] = to_email  # copie silencieuse
 
-    corps_client = f"""
-Bonjour {prospect_nom or ''},
+    msg_client.set_content(text_prospect)
+    msg_client.add_alternative(html_prospect, subtype="html")
 
-Merci pour votre demande d'estimation de ravalement.
+    if pdf_bytes is not None:
+        msg_client.add_attachment(
+            pdf_bytes,
+            maintype="application",
+            subtype="pdf",
+            filename="estimation_ravalement.pdf",
+        )
 
-Voici un récapitulatif :
-• Adresse : {addr_label}
-• Hauteur estimée : {geom.hauteur:.1f} m
-• Surface de façades : {geom.surface_facades:.1f} m²
-• Délai souhaité : {urgency["delai_mois"]} mois
+    # -------- MAIL INTERNE --------
+    msg_admin = EmailMessage()
+    msg_admin["Subject"] = f"[INTERNE] Nouvelle estimation – {addr_label}"
+    msg_admin["From"] = user
+    msg_admin["To"] = to_email
 
-Montant indicatif :
-→ {total:,.2f} € HT
+    admin_txt = f"""
+Nouvelle estimation
 
-Cette estimation est une première approche et sera affinée après visite sur place.
+Nom : {prospect_nom}
+Email : {prospect_email}
+Tel : {telephone or "-"}
 
-Nous revenons rapidement vers vous.
+Adresse : {addr_label}
+Hauteur : {geom.hauteur:.1f} m
+Surface : {geom.surface_facades:.1f} m²
 
-Libert & Cie
-contact@libertsas.fr
+Urgence : {"Oui" if urgency.get("urgent") else "Non"}
+Délai : {urgency["delai_mois"]} mois
+
+Total indicatif : {total:,.2f} € HT
+
+Note client :
+{note or "-"}
 """
-    msg_client.set_content(corps_client)
+    msg_admin.set_content(admin_txt)
 
-    # ---------- ENVOI ----------
+    if pdf_bytes is not None:
+        msg_admin.add_attachment(
+            pdf_bytes,
+            maintype="application",
+            subtype="pdf",
+            filename="estimation_ravalement.pdf",
+        )
+
+    # -------- ENVOI SMTP --------
     try:
         with smtplib.SMTP(host, int(port)) as server:
             if use_tls:
                 server.starttls()
             server.login(user, password)
-            server.send_message(msg_admin)
             server.send_message(msg_client)
+            server.send_message(msg_admin)
 
-        st.success("Votre estimation et votre email ont bien été envoyés.")
+        st.success("Votre estimation vous a été envoyée par e-mail.")
     except Exception as e:
-        st.warning(f"Estimation réalisée mais e-mail non envoyé ({e}).")
+        st.error(f"Erreur lors de l’envoi de l’e-mail : {e}")
 
 
 # ----------------------------------------------------------------
@@ -207,8 +347,14 @@ contact@libertsas.fr
 
 def main():
     st.set_page_config(page_title="Estimateur ravalement", layout="wide")
-    inject_global_style()
     init_state()
+
+    top_col1, top_col2 = st.columns([4, 1])
+    with top_col2:
+        dark_default = st.session_state.get("dark_mode", False)
+        st.session_state.dark_mode = st.toggle("Mode sombre", value=dark_default)
+
+    inject_global_style()
 
     google_api_key = st.secrets.get("GOOGLE_API_KEY")
 
@@ -226,14 +372,17 @@ def main():
         query_state = st.session_state.get("addr_query", "")
         suggestions = []
         if len(query_state.strip()) >= 3:
-            suggestions = get_address_suggestions(query_state)
+            try:
+                suggestions = get_address_suggestions(query_state)
+            except Exception as e:
+                st.error(f"Erreur de recherche d’adresse : {e}")
 
         addr_block = ui.render_address_block(suggestions)
 
         if st.button("Analyser le bâtiment", type="primary"):
             selected = addr_block["selected_obj"]
             if not selected:
-                st.error("Sélectionnez d’abord une adresse.")
+                st.error("Sélectionnez d’abord une adresse dans la liste.")
             else:
                 lat, lon = selected["lat"], selected["lon"]
                 st.session_state.addr_label = selected["label"]
@@ -241,8 +390,19 @@ def main():
 
                 try:
                     st.session_state.osm_ctx = fetch_osm_context(lat, lon)
-                except:
+                except Exception:
                     st.session_state.osm_ctx = {}
+
+                # reset des éléments de calcul
+                st.session_state.lignes = []
+                st.session_state.total = 0.0
+                st.session_state.last_geom = None
+                st.session_state.building_dims = None
+                st.session_state.facade_state = None
+                st.session_state.points_form = None
+                st.session_state.urgency = None
+                st.session_state.contact = None
+                st.session_state.pdf_bytes = None
 
                 st.session_state.step = 1
                 st.rerun()
@@ -256,30 +416,27 @@ def main():
         addr_label = st.session_state.addr_label
         coords = st.session_state.coords
 
-        if not coords:
+        if not coords or not addr_label:
             st.session_state.step = 0
             st.rerun()
 
         lat, lon = coords["lat"], coords["lon"]
         osm_ctx = st.session_state.osm_ctx
 
-        # Street View
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
         iframe = build_streetview_embed_url(lat, lon, google_api_key)
         ui.render_streetview(lat, lon, iframe)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Formulaire
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
         dims = ui.render_building_dimensions_form(osm_ctx)
 
         col_next, col_back = st.columns([1, 1])
         with col_next:
-            if st.button("Étape suivante : État de la façade", type="primary"):
+            if st.button("Étape suivante : état de la façade", type="primary"):
                 st.session_state.building_dims = dims
                 st.session_state.step = 2
                 st.rerun()
-
         with col_back:
             if st.button("Retour"):
                 st.session_state.step = 0
@@ -300,7 +457,7 @@ def main():
 
         col_next, col_back = st.columns([1, 1])
         with col_next:
-            if st.button("Étape suivante : Détails & urgence", type="primary"):
+            if st.button("Étape suivante : détails & urgence", type="primary"):
                 st.session_state.facade_state = facade_state
                 st.session_state.step = 3
                 st.rerun()
@@ -334,7 +491,7 @@ def main():
 
         col_next, col_back = st.columns([1, 1])
         with col_next:
-            if st.button("Étape suivante : Coordonnées", type="primary"):
+            if st.button("Étape suivante : coordonnées", type="primary"):
                 st.session_state.points_form = points
                 st.session_state.urgency = urgency
                 st.session_state.step = 4
@@ -347,7 +504,7 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------------------------------------------------
-    # ÉTAPE 4 — Coordonnées + Calcul + Rapport
+    # ÉTAPE 4 — Coordonnées + Calcul + Rapport + PDF + Emails
     # ---------------------------------------------------
     if step == 4:
         dims = st.session_state.building_dims
@@ -356,19 +513,18 @@ def main():
         addr_label = st.session_state.addr_label
         urgency = st.session_state.urgency
 
-        if not (dims and facade_state and points_form):
+        if not (dims and facade_state and points_form and addr_label and urgency):
             st.session_state.step = 1
             st.rerun()
 
-        # Formulaire coordonnées
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
         contact = ui.render_contact_form()
         st.markdown('</div>', unsafe_allow_html=True)
 
+        # Calcul + email si formulaire valide
         if contact["submitted"]:
             st.session_state.contact = contact
 
-            # --- Géométrie ---
             niveaux = dims["niveaux"]
             hpn = dims["hauteur_par_niveau"]
             largeur = dims["largeur"]
@@ -392,53 +548,74 @@ def main():
             options["porte_cochere"] = facade_state["porte_type"] == "Porte cochère"
 
             lignes, total = build_pricing(
-                geom,
-                dims["support_key"],
-                options,
-                facade_state["etat_facade"],
+                geom=geom,
+                support_key=dims["support_key"],
+                options=options,
+                facade_state=facade_state["etat_facade"],
             )
 
             st.session_state.lignes = lignes
             st.session_state.total = total
 
-            # Envoi du mail
+            pdf_bytes = generate_pdf_estimation(
+                addr_label=addr_label,
+                geom=geom,
+                lignes=lignes,
+                total=total,
+                urgency=urgency,
+                contact=contact,
+            )
+            st.session_state.pdf_bytes = pdf_bytes
+
+            prospect_email = contact["email"]
+            prospect_nom = contact["nom"]
+
             send_notification_email(
                 to_email="contact@libertsas.fr",
-                prospect_email=contact["email"],
-                prospect_nom=contact["nom"],
+                prospect_email=prospect_email,
+                prospect_nom=prospect_nom,
                 addr_label=addr_label,
                 geom=geom,
                 total=total,
                 urgency=urgency,
+                contact=contact,
+                pdf_bytes=pdf_bytes,
             )
 
-        # --- RAPPORT ---
-        if st.session_state.lignes:
+        # Affichage du rapport + bouton PDF
+        if st.session_state.lignes and st.session_state.last_geom is not None:
             st.markdown('<div class="lc-card">', unsafe_allow_html=True)
             ui.render_rapport(
-                addr_label,
+                st.session_state.addr_label,
                 st.session_state.last_geom,
                 st.session_state.lignes,
                 st.session_state.total,
                 st.session_state.urgency,
             )
+
+            pdf_bytes = st.session_state.get("pdf_bytes")
+            if pdf_bytes is not None:
+                st.download_button(
+                    label="Télécharger mon estimation en PDF",
+                    data=pdf_bytes,
+                    file_name="estimation_ravalement.pdf",
+                    mime="application/pdf",
+                )
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Boutons
+        # Boutons bas de page
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("Modifier les étapes précédentes"):
                 st.session_state.step = 3
                 st.rerun()
-
         with col2:
             if st.button("Nouvelle estimation"):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-
 
 
 if __name__ == "__main__":
