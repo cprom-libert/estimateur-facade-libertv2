@@ -136,6 +136,11 @@ def send_notification_email(
     total: float,
     urgency: Dict,
 ):
+    """
+    Envoie 2 mails via Gmail (cprom@libertsas.fr) :
+    1) Notification interne vers to_email (ex : contact@libertsas.fr)
+    2) Confirmation vers le prospect (prospect_email)
+    """
     host = st.secrets.get("SMTP_HOST")
     port = st.secrets.get("SMTP_PORT")
     user = st.secrets.get("SMTP_USER")
@@ -144,16 +149,17 @@ def send_notification_email(
 
     if not host or not port or not user or not password:
         st.info(
-            "L’estimation a été réalisée. L’envoi automatique d’e-mail n’est pas configuré (paramètres SMTP manquants)."
+            "L’estimation a été réalisée. L’envoi automatique d’e-mails n’est pas configuré (paramètres SMTP manquants)."
         )
         return
 
-    msg = EmailMessage()
-    msg["Subject"] = f"Nouvelle estimation ravalement – {addr_label}"
-    msg["From"] = user
-    msg["To"] = to_email
+    # --- 1) Mail interne Libert & Cie ---
+    msg_admin = EmailMessage()
+    msg_admin["Subject"] = f"Nouvelle estimation ravalement – {addr_label}"
+    msg_admin["From"] = user
+    msg_admin["To"] = to_email
 
-    corps = f"""Nouvelle demande d'estimation ravalement
+    corps_admin = f"""Nouvelle demande d'estimation ravalement
 
 Adresse : {addr_label}
 Nom / société : {prospect_nom or 'Non renseigné'}
@@ -164,21 +170,62 @@ Périmètre développé : {geom.perimetre:.1f} ml
 Total estimatif HT : {total:,.2f} €
 
 Délai souhaité avant travaux : {urgency['delai_mois']} mois
-Projet urgent (< =3 mois) : {"Oui" if urgency.get("urgent") else "Non"}
+Projet urgent (≤ 3 mois) : {"Oui" if urgency.get("urgent") else "Non"}
 
 Vous pouvez recontacter le prospect pour affiner le projet et proposer une visite.
 """
-    msg.set_content(corps)
+    msg_admin.set_content(corps_admin)
 
+    # --- 2) Mail de confirmation au prospect ---
+    msg_client = None
+    if prospect_email:
+        msg_client = EmailMessage()
+        msg_client["Subject"] = "Votre estimation de ravalement – Libert & Cie"
+        msg_client["From"] = user
+        msg_client["To"] = prospect_email
+
+        corps_client = f"""Bonjour {prospect_nom or ''},
+
+Merci pour votre demande d'estimation de ravalement.
+
+Voici un récapitulatif des informations saisies :
+- Adresse : {addr_label}
+- Hauteur estimée : {geom.hauteur:.1f} m
+- Surface approximative de façades : {geom.surface_facades:.1f} m²
+- Délai souhaité avant travaux : {urgency['delai_mois']} mois
+- Caractère urgent (≤ 3 mois) : {"Oui" if urgency.get("urgent") else "Non"}
+
+Montant estimatif de votre ravalement :
+- Total indicatif : {total:,.2f} € HT
+
+Cette estimation reste indicative et devra être confirmée après visite sur place.
+Nous vous contacterons prochainement pour échanger sur votre projet.
+
+Bien cordialement,
+
+Libert & Cie
+contact@libertsas.fr
+15 rue Brézin, 75014 Paris
+"""
+        msg_client.set_content(corps_client)
+
+    # --- Envoi ---
     try:
         with smtplib.SMTP(host, int(port)) as server:
             if use_tls:
                 server.starttls()
             server.login(user, password)
-            server.send_message(msg)
-        st.success("Votre demande a bien été enregistrée. Nous vous recontacterons rapidement.")
+
+            # Envoi interne
+            server.send_message(msg_admin)
+
+            # Envoi au client
+            if msg_client is not None:
+                server.send_message(msg_client)
+
+        st.success("Votre demande a bien été enregistrée. L’estimation a été envoyée par e-mail.")
     except Exception as e:
-        st.warning(f"Estimation réalisée, mais l’envoi de l’e-mail n’a pas abouti ({e}).")
+        st.warning(f"Estimation réalisée, mais l’envoi des e-mails n’a pas abouti ({e}).")
 
 
 def main():
@@ -332,7 +379,7 @@ def main():
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ÉTAPE 4 : coordonnées + calcul + rapport + mail
+    # ÉTAPE 4 : coordonnées + calcul + rapport + mails
     if st.session_state.step == 4:
         if not (st.session_state.building_dims and st.session_state.facade_state and st.session_state.points_form):
             st.session_state.step = 1
@@ -349,21 +396,21 @@ def main():
         contact = ui.render_contact_form()
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Quand l’email est valide, on calcule et on envoie la notif
+        # Quand l’email est valide, on calcule et on envoie les mails
         if contact["submitted"]:
             st.session_state.contact = contact
 
-            # Géométrie (on utilise la hauteur par niveau saisie dans building_dims)
+            # Géométrie basée sur la hauteur par niveau saisie
             niveaux = building_dims["niveaux"]
             hauteur_par_niveau = building_dims["hauteur_par_niveau"]
             largeur = building_dims["largeur"]
             building_type = building_dims["building_type"]
 
-            # On reconstruit Geometry en utilisant la hauteur ajustée
             hauteur = max(1, niveaux) * hauteur_par_niveau
             nb_facades = 4 if building_type.upper().startswith("PAVILLON") else 1
             perimetre = largeur * nb_facades
             surface_facades = hauteur * perimetre
+
             geom = Geometry(
                 hauteur=hauteur,
                 surface_facades=surface_facades,
@@ -387,7 +434,7 @@ def main():
             st.session_state.total = total
             st.session_state.last_geom = geom
 
-            # Notification par mail à Libert & Cie
+            # Notification interne + mail client
             prospect_email = contact["email"]
             prospect_nom = contact["nom"]
             send_notification_email(
