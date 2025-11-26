@@ -1,15 +1,17 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 import streamlit as st
 import pandas as pd
 from pricing import Geometry
 
 
+# ---------- TITRE + STEPPER ----------
+
 def render_title():
     st.markdown(
         """
-        <h1 style="margin-bottom:0.2rem;">Estimateur ravalement</h1>
-        <p style="color:rgba(0,0,0,0.55);font-size:0.95rem;margin-bottom:1.2rem;">
-            Estimation rapide et structurée de votre ravalement à partir d’une adresse et de quelques paramètres.
+        <h1 style="margin-bottom:0.2rem;">Estimation de ravalement de façade</h1>
+        <p style="color:rgba(0,0,0,0.60);font-size:0.95rem;margin-bottom:1.2rem;">
+            Obtenez un ordre de grandeur du budget de votre ravalement en 5 étapes simples.
         </p>
         """,
         unsafe_allow_html=True,
@@ -17,7 +19,7 @@ def render_title():
 
 
 def render_stepper(step: int):
-    # 0 = Adresse, 1 = Dimensions, 2 = État façade, 3 = Points singuliers / urgence, 4 = Coordonnées & estimation
+    # 0 = Adresse, 1 = Dimensions, 2 = État, 3 = Points singuliers + urgence, 4 = Coordonnées
     st.markdown(
         f"""
         <div class="lc-stepper">
@@ -25,13 +27,13 @@ def render_stepper(step: int):
                 <span>1. Adresse</span>
             </div>
             <div class="lc-step {'lc-step-active' if step == 1 else ''}">
-                <span>2. Hauteur & largeur</span>
+                <span>2. Taille de la façade</span>
             </div>
             <div class="lc-step {'lc-step-active' if step == 2 else ''}">
                 <span>3. État de la façade</span>
             </div>
             <div class="lc-step {'lc-step-active' if step == 3 else ''}">
-                <span>4. Points singuliers & urgence</span>
+                <span>4. Détails & urgence</span>
             </div>
             <div class="lc-step {'lc-step-active' if step == 4 else ''}">
                 <span>5. Coordonnées & estimation</span>
@@ -42,43 +44,45 @@ def render_stepper(step: int):
     )
 
 
-# --- ÉTAPE 0 : ADRESSE ---
+# ---------- ÉTAPE 0 : ADRESSE ----------
 
+def render_address_block(suggestions: List[Dict]) -> Dict:
+    st.markdown("#### 1. Adresse du bâtiment")
+    st.caption("Commencez par indiquer l’adresse de l’immeuble à ravaler.")
 
-def render_address_block(
-    suggestions: List[Dict],
-) -> Dict:
-    st.markdown("#### Adresse du bâtiment")
+    query = st.text_input(
+        "Adresse",
+        key="addr_query",
+        placeholder="Ex. 15 rue Brézin, 75014 Paris",
+    )
 
-    query = st.text_input("Saisissez l’adresse", key="addr_query", placeholder="Ex. 15 rue Brézin, 75014 Paris")
-
-    selected = None
-    selected_obj: Dict | None = None
+    selected_label: Optional[str] = None
+    selected_obj: Optional[Dict] = None
 
     if len(query.strip()) >= 3 and suggestions:
-        st.caption("Suggestions")
+        st.caption("Suggestions (cliquez pour sélectionner)")
         labels = [s["label"] for s in suggestions]
-        selected = st.radio(
+        selected_label = st.radio(
             "",
             labels,
             index=0,
             key="addr_choice",
         )
-        selected_obj = next((s for s in suggestions if s["label"] == selected), None)
+        selected_obj = next((s for s in suggestions if s["label"] == selected_label), None)
     elif len(query.strip()) >= 3 and not suggestions:
         st.caption("Aucune adresse trouvée pour cette saisie.")
 
     return {
         "query": query,
-        "selected_label": selected,
+        "selected_label": selected_label,
         "selected_obj": selected_obj,
     }
 
 
 def render_streetview(lat: float, lon: float, iframe_url: str):
     st.markdown("#### Vue Street View")
+    st.caption("Vérifiez que la façade affichée correspond bien à votre bâtiment.")
 
-    st.caption("Vérifiez que la façade affichée correspond bien à l’adresse saisie.")
     if "google.com/maps/embed" in iframe_url:
         st.markdown(
             f"""
@@ -96,35 +100,40 @@ def render_streetview(lat: float, lon: float, iframe_url: str):
     else:
         st.image(
             iframe_url,
-            use_container_width=True,
+            use_column_width=True,
             caption="Vue générique (clé Google Maps absente ou non autorisée).",
         )
 
 
-# --- ÉTAPE 1 : DIMENSIONS (TYPE / NIVEAUX / LARGEUR) ---
-
+# ---------- ÉTAPE 1 : DIMENSIONS ----------
 
 def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
-    st.markdown("#### Bâtiment – dimensions")
+    st.markdown("#### 2. Taille de la façade")
+    st.caption(
+        "Indiquez le type de bâtiment, le nombre d’étages et la largeur approximative sur rue. "
+        "Une estimation suffit, pas besoin d’être au centimètre près."
+    )
 
     default_levels = osm_ctx.get("levels") or 5
 
-    building_type = st.selectbox(
-        "Type de bâtiment",
-        ["IMMEUBLE", "PAVILLON"],
+    type_label = st.selectbox(
+        "Quel type de bâtiment ?",
+        ["Immeuble sur rue", "Maison individuelle"],
         index=0,
-        key="building_type",
+        key="building_type_label",
     )
+    # Valeur interne pour le calcul
+    building_type = "IMMEUBLE" if type_label.startswith("Immeuble") else "PAVILLON"
 
     support_label_to_key = {
-        "Plâtre ancien": "PLATRE_ANCIEN",
-        "Pierre de taille": "PIERRE_TAILLE",
-        "Briques": "BRIQUE",
-        "Béton": "BETON",
-        "Pavillon enduit": "PAVILLON_ENDUIT",
+        "Façade enduite (plâtre / crépi)": "PLATRE_ANCIEN",
+        "Façade en pierre de taille": "PIERRE_TAILLE",
+        "Façade en briques": "BRIQUE",
+        "Façade en béton": "BETON",
+        "Maison enduite": "PAVILLON_ENDUIT",
     }
     support_label = st.selectbox(
-        "Support principal",
+        "Type principal de façade",
         list(support_label_to_key.keys()),
         index=0,
         key="support_label",
@@ -132,17 +141,16 @@ def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
     support_key = support_label_to_key[support_label]
 
     niveaux = st.number_input(
-        "Nombre de niveaux hors combles",
+        "Nombre d’étages au-dessus du rez-de-chaussée",
         min_value=1,
         max_value=20,
         value=int(default_levels),
         step=1,
         key="niveaux",
-        help="Nombre d’étages au-dessus du rez-de-chaussée.",
     )
 
     hauteur_par_niveau = st.number_input(
-        "Hauteur moyenne par niveau (m)",
+        "Hauteur moyenne par étage (m)",
         min_value=2.5,
         max_value=4.0,
         value=3.0,
@@ -151,7 +159,7 @@ def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
     )
 
     largeur = st.number_input(
-        "Largeur de la façade principale (m)",
+        "Largeur de la façade sur rue (m)",
         min_value=3.0,
         max_value=80.0,
         value=15.0,
@@ -160,11 +168,10 @@ def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
     )
 
     hauteur_estimee = niveaux * hauteur_par_niveau
-
-    st.caption(f"Hauteur totale estimée : environ {hauteur_estimee:.1f} m (à partir des niveaux renseignés).")
+    st.caption(f"Hauteur totale estimée : environ {hauteur_estimee:.1f} m.")
 
     return {
-        "building_type": building_type,
+        "building_type": building_type,          # interne (IMMEUBLE / PAVILLON)
         "support_key": support_key,
         "niveaux": niveaux,
         "largeur": largeur,
@@ -172,45 +179,57 @@ def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
     }
 
 
-# --- ÉTAPE 2 : ÉTAT FAÇADE / PORTE ---
-
+# ---------- ÉTAPE 2 : ÉTAT FAÇADE ----------
 
 def render_facade_state_form() -> Dict:
-    st.markdown("#### État de la façade et entrée")
+    st.markdown("#### 3. État de la façade")
+    st.caption(
+        "Indiquez l’état général visible depuis la rue. Cela nous permet d’ajuster la part de reprises et réparations."
+    )
 
     etat_label = st.selectbox(
-        "État général de la façade",
-        ["Bon", "Moyen", "Dégradé"],
+        "Comment décririez-vous l’état de la façade ?",
+        ["Plutôt propre", "Quelques défauts", "Très abîmée"],
         index=1,
         key="etat_facade_label",
-        help="Bon : façade peu marquée. Dégradé : nombreux éclats, fissures, cloques.",
     )
-    if etat_label == "Bon":
+
+    if etat_label == "Plutôt propre":
         etat_facade = "BON"
-    elif etat_label == "Dégradé":
+    elif etat_label == "Très abîmée":
         etat_facade = "DEGRADE"
     else:
         etat_facade = "MOYEN"
 
     porte_type = st.selectbox(
-        "Porte principale sur rue",
-        ["Aucune", "Porte d’entrée", "Porte cochère"],
+        "Entrée principale côté rue",
+        ["Pas de porte particulière", "Porte d’entrée", "Grande porte cochère"],
         index=0,
-        key="porte_type",
+        key="porte_type_label",
     )
+
+    if porte_type == "Porte d’entrée":
+        porte_internal = "Porte d’entrée"
+    elif porte_type == "Grande porte cochère":
+        porte_internal = "Porte cochère"
+    else:
+        porte_internal = "Aucune"
 
     return {
         "etat_facade": etat_facade,
         "etat_facade_label": etat_label,
-        "porte_type": porte_type,
+        "porte_type": porte_internal,
     }
 
 
-# --- ÉTAPE 3 : POINTS SINGULIERS + URGENCE ---
-
+# ---------- ÉTAPE 3 : POINTS SINGULIERS + URGENCE ----------
 
 def render_points_singuliers_form(osm_ctx: Dict, building_dims: Dict) -> Dict:
-    st.markdown("#### Points singuliers de façade")
+    st.markdown("#### 4. Détails visibles depuis la rue")
+    st.caption(
+        "Cochez les éléments qui semblent présents sur la façade. "
+        "N’hésitez pas à regarder la vue Street View en parallèle."
+    )
 
     default_commerce = bool(osm_ctx.get("has_shop"))
     largeur = float(building_dims.get("largeur") or 0.0)
@@ -219,43 +238,43 @@ def render_points_singuliers_form(osm_ctx: Dict, building_dims: Dict) -> Dict:
     default_lg_gc = round(0.5 * largeur * niveaux, 1) if largeur > 0 else 0.0
     default_nb_desc = max(1, int(round(largeur / 6))) if largeur > 0 else 2
 
-    c1, c2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-    with c1:
+    with col1:
         has_commerce_rdc = st.checkbox(
-            "Boutique / commerce en RDC",
+            "Il y a une boutique / vitrine au rez-de-chaussée",
             value=default_commerce,
             key="has_commerce_rdc",
         )
         has_bandeaux = st.checkbox(
-            "Bandeaux saillants à traiter",
+            "Il y a des bandeaux ou corniches décoratives à reprendre",
             value=False,
             key="has_bandeaux",
         )
         has_appuis = st.checkbox(
-            "Appuis de fenêtres à reprendre",
+            "Les bords de fenêtres sont à reprendre",
             value=True,
             key="has_appuis",
         )
         has_gardes_corps = st.checkbox(
-            "Garde-corps métalliques sur façade",
+            "Il y a des garde-corps (barreaux) sur les fenêtres / balcons",
             value=True if building_dims.get("building_type") == "IMMEUBLE" else False,
             key="has_gardes_corps",
         )
 
-    with c2:
+    with col2:
         has_toiture_debord = st.checkbox(
-            "Débords de toit / avancées",
+            "Il y a des avancées de toit / débords visibles",
             value=True if building_dims.get("building_type") == "PAVILLON" else False,
             key="has_toiture_debord",
         )
         has_acroteres = st.checkbox(
-            "Acrotères en tête de façade",
+            "En tête de façade, il y a un acrotère (muret ou relevé)",
             value=False,
             key="has_acroteres",
         )
         nb_descente_ep = st.number_input(
-            "Nombre de descentes EP",
+            "Nombre de descentes d’eaux pluviales visibles (tuyaux verticaux)",
             min_value=0,
             max_value=20,
             value=default_nb_desc,
@@ -275,8 +294,8 @@ def render_points_singuliers_form(osm_ctx: Dict, building_dims: Dict) -> Dict:
         )
 
     st.caption(
-        "Les valeurs sont préremplies à partir de la largeur et du nombre de niveaux. "
-        "Ajustez si nécessaire en regardant Street View."
+        "Ces informations permettent d’intégrer les éléments visibles depuis la rue "
+        "(garde-corps, descentes, bandeaux…)."
     )
 
     return {
@@ -292,10 +311,11 @@ def render_points_singuliers_form(osm_ctx: Dict, building_dims: Dict) -> Dict:
 
 
 def render_urgency_form() -> Dict:
-    st.markdown("#### Urgence du projet")
+    st.markdown("#### Délai souhaité pour les travaux")
+    st.caption("Indiquez en combien de mois vous aimeriez idéalement démarrer le chantier.")
 
-    delai_mois = st.number_input(
-        "Idéalement, sous combien de mois souhaitez-vous réaliser les travaux ?",
+    delai_mois = st.slider(
+        "Quand souhaiteriez-vous réaliser les travaux ?",
         min_value=1,
         max_value=36,
         value=6,
@@ -306,9 +326,9 @@ def render_urgency_form() -> Dict:
     urgent = delai_mois <= 3
 
     if urgent:
-        st.caption("Projet à court terme. Nous vous recontacterons rapidement.")
+        st.caption("Projet à court terme : nous vous recontacterons rapidement.")
     else:
-        st.caption("Projet à moyen terme. L’estimation vous permet de vous projeter.")
+        st.caption("Projet à moyen terme : cette estimation vous aide à vous projeter.")
 
     return {
         "delai_mois": int(delai_mois),
@@ -316,13 +336,14 @@ def render_urgency_form() -> Dict:
     }
 
 
-# --- ÉTAPE 4 : COORDONNÉES ---
-
+# ---------- ÉTAPE 4 : COORDONNÉES ----------
 
 def render_contact_form() -> Dict:
-    st.markdown("#### Vos coordonnées")
-
-    st.caption("L’estimation s’affichera après validation de ces informations.")
+    st.markdown("#### 5. Vos coordonnées")
+    st.caption(
+        "Nous utilisons ces informations pour vous envoyer le récapitulatif et, si vous le souhaitez, "
+        "vous rappeler pour affiner le projet."
+    )
 
     with st.form(key="contact_form"):
         nom = st.text_input("Nom / société")
@@ -350,8 +371,7 @@ def render_contact_form() -> Dict:
     }
 
 
-# --- RAPPORT ---
-
+# ---------- RAPPORT ----------
 
 def render_rapport_header(addr_label: str, geom: Geometry, urgency: Dict | None = None):
     st.markdown(
@@ -367,12 +387,9 @@ def render_rapport_header(addr_label: str, geom: Geometry, urgency: Dict | None 
     )
 
     chips_html = (
-        f"""
-        <div class="lc-chip">Hauteur estimée : {geom.hauteur:.1f} m</div>
-        <div class="lc-chip">Surface façades : {geom.surface_facades:.1f} m²</div>
-        <div class="lc-chip">Périmètre : {geom.perimetre:.1f} ml</div>
-        <div class="lc-chip">Façades prises en compte : {geom.nb_facades}</div>
-        """
+        f'<div class="lc-chip">Hauteur estimée : {geom.hauteur:.1f} m</div>'
+        f'<div class="lc-chip">Surface approximative de façades : {geom.surface_facades:.1f} m²</div>'
+        f'<div class="lc-chip">Périmètre développé : {geom.perimetre:.1f} ml</div>'
     )
 
     if urgency:
@@ -394,31 +411,42 @@ def render_pricing_table(lignes: List[Dict], total: float):
         return
 
     df = pd.DataFrame(lignes)
+
+    # Harmonisation des sections + ordre
+    df["section"] = df["section"].replace(
+        {
+            "Installation": "Installation de chantier",
+            "Façades": "Façades",
+            "Boiseries": "Boiseries / menuiseries",
+            "Zinguerie": "Éléments métalliques",
+            "COMMERCE": "Rez-de-chaussée commercial",
+            "TOITURES": "Parties hautes / tête de façade",
+        }
+    )
+
+    order_map = {
+        "Installation de chantier": 1,
+        "Façades": 2,
+        "Boiseries / menuiseries": 3,
+        "Rez-de-chaussée commercial": 4,
+        "Éléments métalliques": 5,
+        "Parties hautes / tête de façade": 6,
+    }
+    df["section_order"] = df["section"].map(order_map).fillna(99)
+    df = df.sort_values(["section_order", "section"])
+
     df_display = df[["section", "designation", "quantite", "unite", "pu", "montant"]]
 
-    df_display["section_order"] = df_display["section"].map(
-        {
-            "LOGISTIQUE": 1,
-            "FAÇADES": 2,
-            "BOISERIES": 3,
-            "COMMERCE": 4,
-            "ZINGUERIE": 5,
-            "TOITURES": 6,
-        }
-    ).fillna(99)
-    df_display = df_display.sort_values(["section_order", "section"])
-
-    st.markdown("#### Détail estimatif (HT)")
     st.dataframe(
-        df_display.drop(columns=["section_order"]),
+        df_display,
         use_container_width=True,
         hide_index=True,
     )
 
     st.markdown(
         f"""
-        <div style="text-align:right;font-size:1.25rem;font-weight:600;margin-top:1rem;">
-            TOTAL ESTIMATIF : {total:,.2f} € HT
+        <div style="text-align:right;font-size:1.1rem;font-weight:600;margin-top:0.8rem;">
+            Total indicatif : {total:,.2f} € HT
         </div>
         """,
         unsafe_allow_html=True,
@@ -427,4 +455,41 @@ def render_pricing_table(lignes: List[Dict], total: float):
 
 def render_rapport(addr_label: str, geom: Geometry, lignes: List[Dict], total: float, urgency: Dict | None = None):
     render_rapport_header(addr_label, geom, urgency)
-    render_pricing_table(lignes, total)
+
+    if not lignes:
+        st.info("Aucune ligne calculée pour cette estimation.")
+        return
+
+    # Synthèse simple pour l’utilisateur
+    st.markdown("#### Estimation globale")
+
+    if total <= 20000:
+        complexite = "Chantier plutôt simple"
+    elif total <= 60000:
+        complexite = "Chantier de complexité standard"
+    else:
+        complexite = "Chantier important / complexe"
+
+    st.markdown(
+        f"""
+        <div style="padding:12px 16px;border-radius:14px;background:#f5f2ee;
+                    border:1px solid rgba(0,0,0,0.05);margin-bottom:10px;">
+            <p style="margin:0 0 4px 0;font-size:0.95rem;">
+                Montant indicatif du ravalement (hors taxes) :
+            </p>
+            <p style="margin:0;font-size:1.4rem;font-weight:600;">
+                {total:,.0f} € HT
+            </p>
+            <p style="margin:6px 0 0 0;font-size:0.9rem;color:rgba(0,0,0,0.65);">
+                {complexite}. Cette estimation est basée sur les informations que vous avez saisies en ligne
+                et devra être confirmée après une visite sur place.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Détail technique dans un expander
+    with st.expander("Afficher le détail par poste (optionnel)", expanded=False):
+        st.markdown("##### Détail estimatif par poste")
+        render_pricing_table(lignes, total)
