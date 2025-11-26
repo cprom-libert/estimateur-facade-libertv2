@@ -1,4 +1,3 @@
-# apis.py
 import requests
 import math
 from typing import List, Dict, Optional
@@ -101,4 +100,77 @@ def _rad_to_deg(rad: float) -> float:
 
 def _compute_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
-    Calcule le relèvement (headi
+    Calcule le relèvement (heading) de (lat1, lon1) vers (lat2, lon2) en degrés.
+    """
+    phi1 = _deg_to_rad(lat1)
+    phi2 = _deg_to_rad(lat2)
+    dlon = _deg_to_rad(lon2 - lon1)
+
+    y = math.sin(dlon) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlon)
+    brng = math.atan2(y, x)
+    brng_deg = (_rad_to_deg(brng) + 360.0) % 360.0
+    return brng_deg
+
+
+def _get_smart_heading(lat: float, lon: float, google_api_key: Optional[str]) -> Optional[float]:
+    """
+    Appelle l’API Street View Metadata pour récupérer la position de la caméra.
+    On calcule ensuite un heading depuis la caméra vers le point (lat, lon).
+    """
+    if not google_api_key:
+        return None
+
+    meta_url = "https://maps.googleapis.com/maps/api/streetview/metadata"
+    params = {
+        "location": f"{lat},{lon}",
+        "size": "640x400",
+        "key": google_api_key,
+    }
+
+    try:
+        resp = requests.get(meta_url, params=params, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None
+
+    if data.get("status") != "OK":
+        return None
+
+    loc = data.get("location") or {}
+    cam_lat = loc.get("lat")
+    cam_lng = loc.get("lng")
+    if cam_lat is None or cam_lng is None:
+        return None
+
+    return _compute_bearing(cam_lat, cam_lng, lat, lon)
+
+
+def build_streetview_embed_url(
+    lat: float,
+    lon: float,
+    google_api_key: Optional[str],
+    pitch: float = 10.0,
+    fov: int = 90,
+) -> str:
+    """
+    URL d'iframe Google Street View (API Embed).
+    On utilise Street View Metadata pour orienter la caméra vers l’adresse choisie.
+    """
+    if not google_api_key:
+        return (
+            "https://upload.wikimedia.org/wikipedia/commons/9/9b/"
+            "Rue_des_Écoles_-_Paris_V_%28FR75%29_-_2021-07-31_-_1.jpg"
+        )
+
+    heading = _get_smart_heading(lat, lon, google_api_key)
+
+    base = "https://www.google.com/maps/embed/v1/streetview"
+    params = f"key={google_api_key}&location={lat},{lon}&fov={fov}"
+    if heading is not None:
+        params += f"&heading={heading:.2f}"
+    if pitch is not None:
+        params += f"&pitch={pitch}"
+
+    return f"{base}?{params}"
