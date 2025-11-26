@@ -159,88 +159,123 @@ def generate_pdf_estimation(
     urgency: Dict,
     contact: Dict,
 ) -> bytes | None:
-    """Génère un PDF récapitulatif (fpdf2) en nettoyant les caractères non latin-1."""
-
+    """
+    Génère un PDF récapitulatif.
+    On simplifie au maximum le texte (ASCII simple, pas de caractères spéciaux).
+    En cas d'erreur fpdf, on retourne None pour ne pas planter l'app.
+    """
     try:
-        from fpdf import FPDF
+        from fpdf import FPDF, FPDFException
     except ImportError:
         st.info("Module 'fpdf2' non installé : le PDF ne sera pas généré.")
         return None
 
-    # Fonction utilitaire pour forcer du latin-1 compatible
+    # Fonction utilitaire : texte compatible ASCII/latin-1, très simple
     def safe(text: str) -> str:
         if text is None:
             text = ""
-        # On remplace le tiret long par un tiret simple
-        text = text.replace("–", "-").replace("—", "-")
-        # Encodage latin-1 avec remplacement des caractères non supportés
+        # Remplacements des caractères problématiques
+        repl = {
+            "–": "-",
+            "—": "-",
+            "•": "-",
+            "²": "2",
+            "°": " deg",
+            "€": "EUR",
+            "’": "'",
+            "“": '"',
+            "”": '"',
+            "«": '"',
+            "»": '"',
+            "…": "...",
+            "é": "e",
+            "è": "e",
+            "ê": "e",
+            "à": "a",
+            "ù": "u",
+            "ç": "c",
+            "ô": "o",
+            "î": "i",
+        }
+        for k, v in repl.items():
+            text = text.replace(k, v)
+        # On limite à latin-1 pour être sûr
         return text.encode("latin-1", "replace").decode("latin-1")
 
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 14)
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 14)
 
-    titre = safe("Estimation de ravalement - Libert & Cie")
-    pdf.cell(0, 10, titre, ln=1)
+        titre = safe("Estimation de ravalement - Libert & Cie")
+        pdf.cell(190, 8, titre, ln=1)
 
-    pdf.set_font("Helvetica", "", 11)
-    pdf.ln(2)
+        pdf.set_font("Helvetica", "", 11)
+        pdf.ln(2)
 
-    addr_txt = safe(f"Adresse : {addr_label}")
-    nom_txt = safe(f"Nom : {contact.get('nom','')}")
-    email_txt = safe(f"Email : {contact.get('email','')}")
-    tel_val = contact.get("tel")
-    tel_txt = safe(f"Téléphone : {tel_val}") if tel_val else None
+        # En-tête informations client
+        addr_txt = safe(f"Adresse : {addr_label}")
+        nom_txt = safe(f"Nom : {contact.get('nom','')}")
+        email_txt = safe(f"Email : {contact.get('email','')}")
+        tel_val = contact.get("tel")
+        tel_txt = safe(f"Telephone : {tel_val}") if tel_val else None
 
-    pdf.multi_cell(0, 6, addr_txt)
-    pdf.multi_cell(0, 6, nom_txt)
-    pdf.multi_cell(0, 6, email_txt)
-    if tel_txt:
-        pdf.multi_cell(0, 6, tel_txt)
+        pdf.multi_cell(190, 6, addr_txt)
+        pdf.multi_cell(190, 6, nom_txt)
+        pdf.multi_cell(190, 6, email_txt)
+        if tel_txt:
+            pdf.multi_cell(190, 6, tel_txt)
 
-    pdf.ln(3)
-    pdf.multi_cell(0, 6, safe(f"Hauteur estimée : {geom.hauteur:.1f} m"))
-    pdf.multi_cell(0, 6, safe(f"Surface de façades : {geom.surface_facades:.1f} m²"))
-    pdf.multi_cell(
-        0, 6, safe(f"Délai souhaité : {urgency.get('delai_mois', '-') } mois")
-    )
+        pdf.ln(3)
+        pdf.multi_cell(190, 6, safe(f"Hauteur estimee : {geom.hauteur:.1f} m"))
+        pdf.multi_cell(190, 6, safe(f"Surface de facade : {geom.surface_facades:.1f} m2"))
+        pdf.multi_cell(
+            190, 6, safe(f"Delai souhaite : {urgency.get('delai_mois', '-') } mois")
+        )
 
-    pdf.ln(4)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.multi_cell(0, 7, safe(f"Montant indicatif : {total:,.2f} € HT"))
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.multi_cell(190, 7, safe(f"Montant indicatif : {total:.2f} EUR HT"))
 
-    pdf.set_font("Helvetica", "", 10)
-    pdf.ln(2)
-    pdf.multi_cell(
-        0,
-        5,
-        safe(
-            "Cette estimation est donnée à titre indicatif et devra être confirmée après visite sur place."
-        ),
-    )
+        pdf.set_font("Helvetica", "", 10)
+        pdf.ln(2)
+        pdf.multi_cell(
+            190,
+            5,
+            safe(
+                "Cette estimation est donnee a titre indicatif et devra etre confirmee apres visite sur place."
+            ),
+        )
 
-    pdf.ln(6)
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, safe("Détail par poste (indicatif)"), ln=1)
-    pdf.set_font("Helvetica", "", 9)
+        pdf.ln(6)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(190, 7, safe("Detail par poste (indicatif)"), ln=1)
+        pdf.set_font("Helvetica", "", 9)
 
-    for l in lignes:
-        lib = safe(str(l["designation"]))
-        q = l["quantite"]
-        u = l["unite"]
-        m = l["montant"]
-        ligne_txt = safe(f"- {lib} : {q} {u} – {m:,.2f} € HT")
-        pdf.multi_cell(0, 5, ligne_txt)
+        for l in lignes:
+            lib = safe(str(l["designation"]))
+            q = l["quantite"]
+            u = l["unite"]
+            m = l["montant"]
+            ligne_txt = safe(f"- {lib} : {q} {u} - {m:.2f} EUR HT")
+            pdf.multi_cell(190, 5, ligne_txt)
 
-    # Sortie en bytes
-    pdf_str = pdf.output(dest="S")
-    if isinstance(pdf_str, bytes):
-        pdf_bytes = pdf_str
-    else:
-        pdf_bytes = pdf_str.encode("latin-1", "replace")
+        # Sortie en bytes
+        pdf_str = pdf.output(dest="S")
+        if isinstance(pdf_str, bytes):
+            pdf_bytes = pdf_str
+        else:
+            pdf_bytes = pdf_str.encode("latin-1", "replace")
 
-    return pdf_bytes
+        return pdf_bytes
+
+    except FPDFException as e:
+        st.warning("Impossible de generer le PDF (limitation technique fpdf). L'estimation reste disponible par email.")
+        return None
+    except Exception as e:
+        st.warning(f"Erreur lors de la generation du PDF : {e}")
+        return None
 
 
 
