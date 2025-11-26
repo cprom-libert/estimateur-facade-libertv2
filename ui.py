@@ -10,7 +10,7 @@ def render_title():
         """
         <h1 style="margin-bottom:0.2rem;">Estimateur ravalement</h1>
         <p style="color:rgba(0,0,0,0.55);font-size:0.95rem;margin-bottom:1.2rem;">
-            Estimation rapide et structurée d’un ravalement à partir d’une adresse et de quelques paramètres.
+            Estimation rapide et structurée de votre ravalement à partir d’une adresse et de quelques paramètres.
         </p>
         """,
         unsafe_allow_html=True,
@@ -18,6 +18,7 @@ def render_title():
 
 
 def render_stepper(step: int):
+    # step : 0 = Adresse, 1 = Bâtiment, 2 = Coordonnées & estimation
     st.markdown(
         f"""
         <div class="lc-stepper">
@@ -27,8 +28,8 @@ def render_stepper(step: int):
             <div class="lc-step {'lc-step-active' if step == 1 else ''}">
                 <span>2. Bâtiment</span>
             </div>
-            <div class="lc-step {'lc-step-active' if step == 1 and st.session_state.get('lignes') else ''}">
-                <span>3. Estimation</span>
+            <div class="lc-step {'lc-step-active' if step == 2 else ''}">
+                <span>3. Coordonnées & estimation</span>
             </div>
         </div>
         """,
@@ -69,7 +70,7 @@ def render_address_block(
 def render_streetview(lat: float, lon: float, iframe_url: str):
     st.markdown("#### Vue Street View")
 
-    st.caption("Cette vue vous permet de vérifier la façade avant de valider l’estimation.")
+    st.caption("Vérifiez que la façade affichée correspond bien à l’adresse saisie.")
     if "google.com/maps/embed" in iframe_url:
         st.markdown(
             f"""
@@ -250,6 +251,37 @@ def render_points_singuliers_form(osm_ctx: Dict, building_form: Dict) -> Dict:
     }
 
 
+def render_contact_form() -> Dict:
+    st.markdown("#### Vos coordonnées")
+
+    st.caption("L’estimation s’affichera après validation de ces informations.")
+
+    with st.form(key="contact_form"):
+        nom = st.text_input("Nom / société")
+        email = st.text_input("Adresse e-mail *")
+        tel = st.text_input("Téléphone (optionnel)")
+        note = st.text_area(
+            "Précisions sur votre projet (optionnel)",
+            height=80,
+        )
+        submitted = st.form_submit_button("Obtenir mon estimation")
+
+    email_valid = bool(email and "@" in email)
+
+    if submitted and not email_valid:
+        st.warning("Merci de renseigner une adresse e-mail valide.")
+
+    return {
+        "submitted": submitted and email_valid,
+        "raw_submitted": submitted,
+        "email_valid": email_valid,
+        "email": email,
+        "nom": nom,
+        "tel": tel,
+        "note": note,
+    }
+
+
 def render_rapport_header(addr_label: str, geom: Geometry):
     st.markdown(
         f"""
@@ -284,7 +316,6 @@ def render_pricing_table(lignes: List[Dict], total: float):
     df = pd.DataFrame(lignes)
     df_display = df[["section", "designation", "quantite", "unite", "pu", "montant"]]
 
-    # Tri par section pour un rapport plus lisible
     df_display["section_order"] = df_display["section"].map(
         {
             "LOGISTIQUE": 1,

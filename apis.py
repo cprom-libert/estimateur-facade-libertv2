@@ -1,5 +1,6 @@
 # apis.py
 import requests
+import math
 from typing import List, Dict, Optional
 
 
@@ -90,29 +91,14 @@ def fetch_osm_context(lat: float, lon: float, radius_m: int = 20) -> Dict:
     }
 
 
-def build_streetview_embed_url(
-    lat: float,
-    lon: float,
-    google_api_key: Optional[str],
-    heading: Optional[float] = None,
-    pitch: float = 10.0,
-    fov: int = 90,
-) -> str:
-    """
-    URL d'iframe Google Street View (API Embed).
-    L’utilisateur peut se déplacer librement dans la vue.
-    """
-    if not google_api_key:
-        # Image générique si pas de clé
-        return (
-            "https://upload.wikimedia.org/wikipedia/commons/9/9b/"
-            "Rue_des_Écoles_-_Paris_V_%28FR75%29_-_2021-07-31_-_1.jpg"
-        )
+def _deg_to_rad(deg: float) -> float:
+    return deg * math.pi / 180.0
 
-    base = "https://www.google.com/maps/embed/v1/streetview"
-    params = f"key={google_api_key}&location={lat},{lon}&fov={fov}"
-    if heading is not None:
-        params += f"&heading={heading}"
-    if pitch is not None:
-        params += f"&pitch={pitch}"
-    return f"{base}?{params}"
+
+def _rad_to_deg(rad: float) -> float:
+    return rad * 180.0 / math.pi
+
+
+def _compute_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    Calcule le relèvement (headi
