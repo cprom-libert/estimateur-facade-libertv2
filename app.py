@@ -149,65 +149,99 @@ def inject_global_style():
 #              GÉNÉRATION DU PDF (prospect + interne)
 # ----------------------------------------------------------------
 
+from io import BytesIO
+
 def generate_pdf_estimation(
     addr_label: str,
     geom: Geometry,
-    lignes: List[Dict],
+    lignes: list[dict],
     total: float,
     urgency: Dict,
     contact: Dict,
-) -> Optional[bytes]:
-    """Génère un PDF récapitulatif (nécessite fpdf2)."""
+) -> bytes | None:
+    """Génère un PDF récapitulatif (fpdf2) en nettoyant les caractères non latin-1."""
+
     try:
         from fpdf import FPDF
     except ImportError:
         st.info("Module 'fpdf2' non installé : le PDF ne sera pas généré.")
         return None
 
+    # Fonction utilitaire pour forcer du latin-1 compatible
+    def safe(text: str) -> str:
+        if text is None:
+            text = ""
+        # On remplace le tiret long par un tiret simple
+        text = text.replace("–", "-").replace("—", "-")
+        # Encodage latin-1 avec remplacement des caractères non supportés
+        return text.encode("latin-1", "replace").decode("latin-1")
+
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, "Estimation de ravalement – Libert & Cie", ln=1)
+
+    titre = safe("Estimation de ravalement - Libert & Cie")
+    pdf.cell(0, 10, titre, ln=1)
 
     pdf.set_font("Helvetica", "", 11)
     pdf.ln(2)
-    pdf.multi_cell(0, 6, f"Adresse : {addr_label}")
-    pdf.multi_cell(0, 6, f"Nom : {contact.get('nom','')}")
-    pdf.multi_cell(0, 6, f"Email : {contact.get('email','')}")
-    if contact.get("tel"):
-        pdf.multi_cell(0, 6, f"Téléphone : {contact.get('tel')}")
+
+    addr_txt = safe(f"Adresse : {addr_label}")
+    nom_txt = safe(f"Nom : {contact.get('nom','')}")
+    email_txt = safe(f"Email : {contact.get('email','')}")
+    tel_val = contact.get("tel")
+    tel_txt = safe(f"Téléphone : {tel_val}") if tel_val else None
+
+    pdf.multi_cell(0, 6, addr_txt)
+    pdf.multi_cell(0, 6, nom_txt)
+    pdf.multi_cell(0, 6, email_txt)
+    if tel_txt:
+        pdf.multi_cell(0, 6, tel_txt)
 
     pdf.ln(3)
-    pdf.multi_cell(0, 6, f"Hauteur estimée : {geom.hauteur:.1f} m")
-    pdf.multi_cell(0, 6, f"Surface de façades : {geom.surface_facades:.1f} m²")
-    pdf.multi_cell(0, 6, f"Délai souhaité : {urgency.get('delai_mois','-')} mois")
+    pdf.multi_cell(0, 6, safe(f"Hauteur estimée : {geom.hauteur:.1f} m"))
+    pdf.multi_cell(0, 6, safe(f"Surface de façades : {geom.surface_facades:.1f} m²"))
+    pdf.multi_cell(
+        0, 6, safe(f"Délai souhaité : {urgency.get('delai_mois', '-') } mois")
+    )
 
     pdf.ln(4)
     pdf.set_font("Helvetica", "B", 12)
-    pdf.multi_cell(0, 7, f"Montant indicatif : {total:,.2f} € HT")
+    pdf.multi_cell(0, 7, safe(f"Montant indicatif : {total:,.2f} € HT"))
+
     pdf.set_font("Helvetica", "", 10)
     pdf.ln(2)
     pdf.multi_cell(
         0,
         5,
-        "Cette estimation est donnée à titre indicatif et devra être confirmée après visite sur place.",
+        safe(
+            "Cette estimation est donnée à titre indicatif et devra être confirmée après visite sur place."
+        ),
     )
 
     pdf.ln(6)
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, "Détail par poste (indicatif)", ln=1)
+    pdf.cell(0, 7, safe("Détail par poste (indicatif)"), ln=1)
     pdf.set_font("Helvetica", "", 9)
 
     for l in lignes:
-        pdf.multi_cell(
-            0,
-            5,
-            f"- {l['designation']} : {l['quantite']} {l['unite']} – {l['montant']:,.2f} € HT",
-        )
+        lib = safe(str(l["designation"]))
+        q = l["quantite"]
+        u = l["unite"]
+        m = l["montant"]
+        ligne_txt = safe(f"- {lib} : {q} {u} – {m:,.2f} € HT")
+        pdf.multi_cell(0, 5, ligne_txt)
 
-    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    # Sortie en bytes
+    pdf_str = pdf.output(dest="S")
+    if isinstance(pdf_str, bytes):
+        pdf_bytes = pdf_str
+    else:
+        pdf_bytes = pdf_str.encode("latin-1", "replace")
+
     return pdf_bytes
+
 
 
 # ----------------------------------------------------------------
