@@ -17,11 +17,11 @@ def build_pricing(
     etat_facade: str,
 ) -> Tuple[List[Dict,], float]:
     """
-    Construit l'estimation détaillée poste par poste.
-    Retourne (lignes, total_ttc).
-
+    Estimation détaillée poste par poste.
     - Tous les prix sont en TTC.
-    - On reste dans la moyenne du marché parisien.
+    - Le système de ravalement dépend du support et du choix client :
+      * Façade enduite/béton : PEINTURE ou ENDUIT_SANS_PEINTURE
+      * Façade pierre/brique : système chaux (sans peinture pliolite)
     """
 
     lignes: List[Dict] = []
@@ -70,10 +70,22 @@ def build_pricing(
         }.get(etat, 0.15)
 
         support = (support or "").upper()
-        # pierre / brique : on piochage souvent moins
+        # pierre / brique : un peu moins de piochage en proportion
         if "PIERRE" in support or "BRIQUE" in support:
-            base *= 0.5
+            base *= 0.7
         return base
+
+    # Type de façade et solution choisie
+    support = (support_key or "").upper()
+    is_pierre_brique = "PIERRE" in support or "BRIQUE" in support or "MOELLON" in support
+    is_enduit_beton = "ENDUIT" in support or "BETON" in support or "BÉTON" in support
+
+    solution = (options.get("solution_ravalement") or "PEINTURE").upper()
+    # PEINTURE ou ENDUIT_SANS_PEINTURE
+
+    # Ratio de surface concernée par piochage / reprises (par défaut)
+    r_pioch = ratio_piochage(etat_facade, support_key)
+    surf_pioch = surface * r_pioch
 
     # ------------------------------------------------------------------
     # INSTALLATION
@@ -96,9 +108,8 @@ def build_pricing(
     )
 
     # ------------------------------------------------------------------
-    # PRÉPARATION
+    # PRÉPARATION (commune à tous les systèmes)
     # ------------------------------------------------------------------
-    # Échafaudage sur toute la surface traitée
     add_line(
         "PREPARATION",
         "Échafaudage de façade",
@@ -108,7 +119,6 @@ def build_pricing(
         "Structure temporaire permettant de travailler en hauteur sur toute la façade en sécurité.",
     )
 
-    # Nettoyage haute pression
     add_line(
         "PREPARATION",
         "Nettoyage de façade haute pression",
@@ -118,71 +128,150 @@ def build_pricing(
         "Nettoyage à l'eau sous pression pour enlever salissures, mousses et poussières avant travaux.",
     )
 
-    # Piochage + armature sur une partie de la surface
-    r_pioch = ratio_piochage(etat_facade, support_key)
-    surf_pioch = surface * r_pioch
-
-    add_line(
-        "PREPARATION",
-        "Piochage des enduits dégradés et évacuation des gravats",
-        surf_pioch,
-        "m²",
-        95.0,
-        "Dépose manuelle des enduits qui sonnent creux ou se décollent, évacuation en décharge.",
-    )
-    add_line(
-        "PREPARATION",
-        "Pose d'armature (toile de renfort) sur zones fragilisées",
-        surf_pioch,
-        "m²",
-        30.0,
-        "Pose d'une trame de renfort pour stabiliser les supports fissurés avant enduit.",
-    )
-
     # ------------------------------------------------------------------
-    # RAVALEMENT (ENDUITS)
+    # RAVALEMENT : choix du système selon support + souhait client
     # ------------------------------------------------------------------
-    support = (support_key or "").upper()
-    if surf_pioch > 0:
-        if "PIERRE" in support or "MOELLON" in support or "CHAUX" in support:
+    # 1) Façade pierre / brique → système chaux, sans peinture pliolite
+    if is_pierre_brique:
+        if surf_pioch > 0:
+            add_line(
+                "PREPARATION",
+                "Piochage des enduits dégradés et évacuation des gravats",
+                surf_pioch,
+                "m²",
+                95.0,
+                "Dépose manuelle des enduits qui sonnent creux ou se décollent, évacuation en décharge.",
+            )
+            add_line(
+                "PREPARATION",
+                "Pose d'armature (toile de renfort) sur zones fragilisées",
+                surf_pioch,
+                "m²",
+                30.0,
+                "Trame de renfort sur zones fissurées avant enduit à la chaux.",
+            )
             add_line(
                 "RAVALEMENT",
                 "Enduit de façade à la chaux",
                 surf_pioch,
                 "m²",
                 170.0,
-                "Enduit traditionnel à la chaux adapté aux façades anciennes (pierre, moellons).",
+                "Enduit traditionnel à la chaux pour reprendre les zones dégradées sur façades en pierre ou brique.",
             )
-        else:
+        # Pas de peinture pliolite ici.
+
+    # 2) Façade enduit / béton
+    elif is_enduit_beton:
+        # a) Option peinture (classique)
+        if solution == "PEINTURE":
+            if surf_pioch > 0:
+                add_line(
+                    "PREPARATION",
+                    "Piochage des enduits dégradés et évacuation des gravats",
+                    surf_pioch,
+                    "m²",
+                    95.0,
+                    "Dépose des zones d'enduit qui n'adhèrent plus avant reprise.",
+                )
+                add_line(
+                    "PREPARATION",
+                    "Pose d'armature (toile de renfort) sur zones fragilisées",
+                    surf_pioch,
+                    "m²",
+                    30.0,
+                    "Trame de renfort pour stabiliser les zones reprises.",
+                )
+                if r_pioch >= 0.2:
+                    add_line(
+                        "RAVALEMENT",
+                        "Enduit monocouche de façade sur zones reprises",
+                        surf_pioch,
+                        "m²",
+                        75.0,
+                        "Enduit monocouche projeté sur les parties fortement dégradées avant peinture.",
+                    )
+
             add_line(
-                "RAVALEMENT",
-                "Enduit monocouche de façade",
-                surf_pioch,
+                "PEINTURE",
+                "Impression de façade (sous-couche fixante)",
+                surface,
                 "m²",
-                75.0,
-                "Enduit monocouche projeté servant à la fois de protection et de finition décorative.",
+                19.0,
+                "Sous-couche pour homogénéiser le support et améliorer l'adhérence de la peinture.",
+            )
+            add_line(
+                "PEINTURE",
+                "Peinture de façade pliolite (2 couches)",
+                surface,
+                "m²",
+                46.0,
+                "Peinture de façade résistante aux intempéries, appliquée en deux couches.",
             )
 
-    # ------------------------------------------------------------------
-    # PEINTURE FAÇADE
-    # ------------------------------------------------------------------
-    # Impression + peinture pliolite sur toute la surface
-    add_line(
-        "PEINTURE",
-        "Impression de façade (sous-couche fixante)",
-        surface,
-        "m²",
-        19.0,
-        "Sous-couche pour homogénéiser le support et améliorer l'adhérence de la peinture.",
-    )
-    add_line(
-        "PEINTURE",
-        "Peinture de façade pliolite (2 couches)",
-        surface,
-        "m²",
-        46.0,
-        "Peinture de façade résistante aux intempéries, appliquée en deux couches.",
-    )
+        # b) Option sans peinture : on repart sur un enduit complet
+        elif solution == "ENDUIT_SANS_PEINTURE":
+            # On considère un piochage quasi complet
+            surf_pioch_full = surface
+            add_line(
+                "PREPARATION",
+                "Piochage integral des enduits existants et évacuation des gravats",
+                surf_pioch_full,
+                "m²",
+                95.0,
+                "Dépose complète de l'ancien enduit pour repartir sur un support sain.",
+            )
+            add_line(
+                "PREPARATION",
+                "Pose d'armature (toile de renfort) sur l'ensemble de la façade",
+                surf_pioch_full,
+                "m²",
+                30.0,
+                "Trame de renfort sur l'ensemble de la façade avant enduit.",
+            )
+            add_line(
+                "RAVALEMENT",
+                "Enduit monocouche de façade (teinté, sans peinture)",
+                surface,
+                "m²",
+                75.0,
+                "Enduit monocouche projeté sur toute la façade, teinté dans la masse, sans peinture de finition.",
+            )
+
+    # 3) Autres cas → traitement peinture standard
+    else:
+        if surf_pioch > 0 and r_pioch >= 0.25:
+            add_line(
+                "PREPARATION",
+                "Piochage des zones dégradées et évacuation des gravats",
+                surf_pioch,
+                "m²",
+                95.0,
+                "Dépose des zones d'enduit ou de peinture qui n'adhèrent plus avant reprise.",
+            )
+            add_line(
+                "PREPARATION",
+                "Pose d'armature (toile de renfort) sur zones reprises",
+                surf_pioch,
+                "m²",
+                30.0,
+                "Trame de renfort pour stabiliser les zones reprises.",
+            )
+        add_line(
+            "PEINTURE",
+            "Impression de façade (sous-couche fixante)",
+            surface,
+            "m²",
+            19.0,
+            "Sous-couche pour homogénéiser le support et améliorer l'adhérence de la peinture.",
+        )
+        add_line(
+            "PEINTURE",
+            "Peinture de façade pliolite (2 couches)",
+            surface,
+            "m²",
+            46.0,
+            "Peinture de façade résistante aux intempéries, appliquée en deux couches.",
+        )
 
     # ------------------------------------------------------------------
     # OUVERTURES / MENUISERIES / GARDE-CORPS
@@ -193,16 +282,14 @@ def build_pricing(
     surf_boiseries = nb_fenetres_grandes * 1.5
 
     if surf_boiseries > 0:
-        # Protection menuiseries
         add_line(
             "FINITIONS",
             "Protection des menuiseries (films et rubans adhésifs)",
             surf_boiseries,
             "m²",
             4.0,
-            "Protection des fenêtres et portes par adhésif ou film plastique avant peinture.",
+            "Protection des fenêtres et portes par adhésif ou film plastique avant travaux.",
         )
-        # Peinture boiseries
         add_line(
             "PEINTURE",
             "Peinture des boiseries (volets, encadrements)",
@@ -212,7 +299,6 @@ def build_pricing(
             "Préparation et peinture des éléments en bois visibles en façade.",
         )
 
-    # Garde-corps
     ml_gc = float(options.get("ml_garde_corps_fer_forge", 0.0) or 0.0)
     add_line(
         "PEINTURE",
@@ -223,7 +309,6 @@ def build_pricing(
         "Décapage léger, antirouille et peinture des garde-corps en métal.",
     )
 
-    # Ferronnerie ancienne : on considère qu'environ 30 % des garde-corps sont plus complexes
     ml_ferr = ml_gc * 0.3
     add_line(
         "PEINTURE",
@@ -235,7 +320,7 @@ def build_pricing(
     )
 
     # ------------------------------------------------------------------
-    # ZINGUERIE (optionnelle pour l'instant, valeurs souvent à 0)
+    # ZINGUERIE
     # ------------------------------------------------------------------
     ml_couvertine = float(options.get("ml_couvertine", 0.0) or 0.0)
     add_line(
@@ -281,7 +366,6 @@ def build_pricing(
             "Rénovation des petites lucarnes en toiture (bardage, peinture et étanchéité périphérique).",
         )
 
-        # Complément d'échafaudage équivalent à un étage pour accéder aux chiens-assis
         surface_par_etage = surface / float(niveaux)
         add_line(
             "PREPARATION",
@@ -292,7 +376,6 @@ def build_pricing(
             "Surépaisseur d'échafaudage nécessaire pour accéder aux chiens-assis.",
         )
 
-    # Nettoyage fin de chantier
     add_line(
         "FINITIONS",
         "Nettoyage complet de fin de chantier",
