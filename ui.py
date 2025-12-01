@@ -1,296 +1,328 @@
-# ui.py
 import streamlit as st
-from typing import Dict, Any, List
-from apis import get_address_suggestions, build_streetview_embed_url
+from typing import Any, Callable, Dict, Optional
 
-LIBERT_PRIMARY = "#0B2239"
-LIBERT_ACCENT = "#E3B35A"
+from apis import build_streetview_embed_url
 
 
 def init_css() -> None:
+    """Applique un style sobre (inspiration Apple) à l'app."""
     st.markdown(
-        f"""
+        """
         <style>
-        .lc-card {{
-            background-color: #ffffff;
-            border-radius: 18px;
-            padding: 18px 20px;
-            box-shadow: 0 8px 20px rgba(0,0,0,0.06);
-            margin-bottom: 18px;
-        }}
-        .lc-title {{
-            font-size: 1.3rem;
-            font-weight: 600;
-            color: {LIBERT_PRIMARY};
-            margin-bottom: 0.4rem;
-        }}
-        .lc-subtitle {{
-            font-size: 0.95rem;
-            color: #555;
+        .lc-card {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 1.2rem 1.4rem;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
             margin-bottom: 1rem;
-        }}
-        .stButton>button {{
-            border-radius: 999px;
-            padding: 0.5rem 1.4rem;
-            font-weight: 600;
-        }}
+        }
+        .lc-bandeau-prix {
+            position: sticky;
+            bottom: 0;
+            z-index: 999;
+            background: #0B2239;
+            color: #ffffff;
+            padding: 0.7rem 1.2rem;
+            border-radius: 12px;
+            margin-top: 0.8rem;
+        }
+        .lc-bandeau-prix small {
+            color: #cbd5f5;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
+# ----------------------------------------------------------------------
+# Étape 0 : adresse
+# ----------------------------------------------------------------------
 def render_address_step() -> bool:
+    """
+    Étape adresse : l'utilisateur saisit l'adresse.
+    Geocoding à réaliser côté apis.py (geocode_address).
+    Ici, on se contente de demander l'adresse et on laisse apis/geocoding existant
+    remplir st.session_state.coords et st.session_state.addr_label si besoin.
+    """
     st.markdown('<div class="lc-card">', unsafe_allow_html=True)
-    st.markdown('<div class="lc-title">1. Adresse du bâtiment</div>', unsafe_allow_html=True)
+    st.subheader("Adresse du chantier")
+
+    addr = st.text_input(
+        "Adresse",
+        value=st.session_state.get("addr_label", "") or "",
+        placeholder="Ex. : 15 rue Brézin, 75014 Paris",
+    )
+
     st.markdown(
-        "<div class='lc-subtitle'>Saisissez l’adresse du bâtiment. Nous pré-remplissons les informations techniques.</div>",
+        "<p style='font-size:0.9rem;color:#555;'>"
+        "Saisissez l'adresse du bâtiment à ravaler. "
+        "L'étape suivante vous permettra de préciser les dimensions de la façade."
+        "</p>",
         unsafe_allow_html=True,
     )
 
-    query = st.text_input("Adresse (rue, code postal, ville)", value=st.session_state.get("addr_query", ""))
-    st.session_state.addr_query = query
-
-    suggestions = []
-    chosen = None
-    if query and len(query) >= 3:
-        suggestions = get_address_suggestions(query)
-
-    labels = [s["label"] for s in suggestions]
-    if labels:
-        idx = st.selectbox(
-            "Résultats trouvés",
-            options=list(range(len(labels))),
-            format_func=lambda i: labels[i],
-        )
-        chosen = suggestions[idx]
-
     ok = False
-    if chosen:
-        if st.button("Valider cette adresse", type="primary"):
-            st.session_state.addr_label = chosen["label"]
-            st.session_state.coords = {"lat": chosen["lat"], "lon": chosen["lon"]}
+    if st.button("Valider l'adresse et continuer", type="primary"):
+        addr = (addr or "").strip()
+        if not addr:
+            st.error("Merci de renseigner une adresse.")
+        else:
+            # On stocke simplement l'adresse saisie.
+            st.session_state.addr_label = addr
+            # Les coordonnées (lat/lon) doivent être définies côté apis/geocoding.
+            # Si ce n'est pas fait, l'affichage Street View utilisera les infos disponibles.
             ok = True
 
     st.markdown("</div>", unsafe_allow_html=True)
     return ok
 
 
-def render_map_and_form(google_api_key: str | None, content_func, *args, **kwargs):
+# ----------------------------------------------------------------------
+# Wrapper : carte + formulaire sur desktop
+# ----------------------------------------------------------------------
+def render_map_and_form(
+    google_api_key: Optional[str],
+    form_func: Callable[..., Any],
+    osm_ctx: Optional[Dict] = None,
+    **form_kwargs: Any,
+) -> Any:
     """
-    Affiche la carte / Street View à gauche (ou au-dessus sur mobile),
-    et le contenu du formulaire à droite.
+    Affiche la Street View à gauche (si possible) et le formulaire à droite.
+    Sur mobile, les colonnes s'empilent naturellement.
     """
     coords = st.session_state.get("coords")
-    if not coords:
-        st.warning("Veuillez d’abord sélectionner une adresse.")
-        return None
 
-    addr_label = st.session_state.get("addr_label", "")
-    lat, lon = coords["lat"], coords["lon"]
-    iframe = build_streetview_embed_url(lat, lon, google_api_key)
-
-    col_map, col_form = st.columns([1, 1.3])
+    col_map, col_form = st.columns([1, 1.2])
 
     with col_map:
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
-        st.markdown(f"<b>Adresse sélectionnée :</b><br>{addr_label}", unsafe_allow_html=True)
-        st.markdown(
-            f'<iframe src="{iframe}" width="100%" height="320" style="border:0;border-radius:14px;" allowfullscreen loading="lazy"></iframe>',
-            unsafe_allow_html=True,
-        )
+        st.markdown("**Votre façade**", unsafe_allow_html=True)
+
+        if coords and google_api_key:
+            iframe = build_streetview_embed_url(coords["lat"], coords["lon"], google_api_key)
+            st.markdown(
+                f'<iframe src="{iframe}" width="100%" height="320" '
+                f'style="border:0;border-radius:14px;" allowfullscreen loading="lazy"></iframe>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("La vue Street View apparaîtra ici après la géolocalisation de l'adresse.")
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_form:
         st.markdown('<div class="lc-card">', unsafe_allow_html=True)
-        out = content_func(*args, **kwargs)
+        out = form_func(osm_ctx or {}, **form_kwargs)
         st.markdown("</div>", unsafe_allow_html=True)
 
     return out
 
 
-def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
-    st.markdown('<div class="lc-title">2. Dimensions principales</div>', unsafe_allow_html=True)
-    st.markdown(
-        "<div class='lc-subtitle'>Ces éléments servent à estimer la surface de façades et l’échafaudage.</div>",
-        unsafe_allow_html=True,
-    )
+# ----------------------------------------------------------------------
+# Étape 1 : dimensions du bâtiment
+# ----------------------------------------------------------------------
+def render_building_dimensions_form(osm_ctx: Dict) -> Optional[Dict]:
+    """
+    Formulaire des dimensions principales.
+    """
+    st.subheader("Dimensions de la façade")
 
-    building_type_default = osm_ctx.get("building_type", "IMMEUBLE")
-    building_type = st.selectbox(
+    building_type = st.radio(
         "Type de bâtiment",
         options=["IMMEUBLE", "PAVILLON"],
-        index=0 if building_type_default == "IMMEUBLE" else 1,
+        index=0,
+        format_func=lambda x: "Immeuble" if x == "IMMEUBLE" else "Pavillon / maison",
     )
 
-    levels_osm = osm_ctx.get("levels_osm")
-    niveaux_default = int(levels_osm) if levels_osm else 5
-    niveaux = st.number_input(
-        "Nombre de niveaux (R+...)", min_value=1, max_value=12, value=niveaux_default, step=1
-    )
+    col_niv, col_hpn = st.columns(2)
+    with col_niv:
+        niveaux = st.number_input(
+            "Nombre de niveaux (étages)",
+            min_value=1,
+            max_value=15,
+            value=int(osm_ctx.get("levels", 5) or 5),
+            step=1,
+        )
+    with col_hpn:
+        hauteur_par_niveau = st.number_input(
+            "Hauteur moyenne par niveau (m)",
+            min_value=2.5,
+            max_value=4.0,
+            value=3.0,
+            step=0.1,
+        )
 
-    hauteur_par_niveau = st.number_input(
-        "Hauteur moyenne par niveau (m)",
-        min_value=2.5,
-        max_value=4.0,
-        value=3.0 if building_type == "IMMEUBLE" else 2.8,
-        step=0.1,
-    )
-
-    # Largeur : clamp >= 3 m
-    largeur_rue_default = osm_ctx.get("facade_rue_m") or 15.0
-    if largeur_rue_default < 3.0:
-        largeur_rue_default = 3.0
     largeur = st.number_input(
-        "Largeur de la façade principale (m)",
-        min_value=3.0,
-        max_value=80.0,
-        value=float(round(largeur_rue_default, 1)),
+        "Largeur de la façade principale (sur rue) en mètres",
+        min_value=1.0,
+        max_value=200.0,
+        value=float(osm_ctx.get("front_length_m", 15.0) or 15.0),
         step=0.5,
+        help="Longueur approximative de la façade côté rue.",
     )
 
-    # Profondeur : clamp >= 3 m
-    profondeur_raw = osm_ctx.get("depth_m") or largeur
-    if profondeur_raw < 3.0:
-        profondeur_raw = 3.0
     profondeur = st.number_input(
-        "Profondeur estimée du bâtiment (m)",
-        min_value=3.0,
+        "Profondeur approximative du bâtiment (m)",
+        min_value=5.0,
         max_value=80.0,
-        value=float(round(profondeur_raw, 1)),
+        value=float(osm_ctx.get("depth_m", 12.0) or 12.0),
         step=0.5,
         help="Utilisé pour un éventuel pignon ou un pavillon complet.",
     )
 
-    has_pignon = st.checkbox("Un pignon latéral est également à traiter", value=False)
+    has_pignon = st.checkbox(
+        "Inclure une façade latérale (pignon) dans le ravalement",
+        value=False,
+        help="Cochez si une façade latérale donnant sur l'extérieur doit aussi être ravallée.",
+    )
 
-    st.markdown("### Boutiques en rez-de-chaussée")
-    has_shops = st.checkbox("Il y a des boutiques / vitrines sur le rez-de-chaussée", value=False)
-    shops_config = "aucune"
-    if has_shops:
-        shops_config = st.radio(
-            "Configuration des boutiques",
-            options=["une_boutique_toute_longueur", "deux_boutiques", "autre_configuration"],
-            format_func=lambda v: {
-                "une_boutique_toute_longueur": "Une boutique sur (presque) toute la longueur",
-                "deux_boutiques": "Deux boutiques principales",
-                "autre_configuration": "Autre configuration (mixte boutiques / logements)",
-            }[v],
-        )
-
-    return {
+    dims = {
         "building_type": building_type,
         "niveaux": int(niveaux),
         "hauteur_par_niveau": float(hauteur_par_niveau),
         "largeur": float(largeur),
         "profondeur": float(profondeur),
         "has_pignon": bool(has_pignon),
-        "has_shops": bool(has_shops),
-        "shops_config": shops_config,
     }
 
+    return dims
 
 
-def render_facade_state_form(osm_ctx: Dict) -> Dict:
-    st.markdown('<div class="lc-title">3. État de la façade et éléments visibles</div>', unsafe_allow_html=True)
-    st.markdown(
-        "<div class='lc-subtitle'>Quelques questions pour adapter l’estimation à la réalité du bâtiment.</div>",
-        unsafe_allow_html=True,
-    )
+# ----------------------------------------------------------------------
+# Étape 2 : état de façade, ouvertures, garde-corps, chiens-assis
+# ----------------------------------------------------------------------
+def render_facade_state_form(osm_ctx: Dict) -> Optional[Dict]:
+    st.subheader("État de la façade et éléments particuliers")
 
     etat_facade = st.radio(
-        "État global de la façade",
-        options=["bon", "moyen", "degrade"],
+        "État général de la façade",
+        options=["bon", "moyen", "dégradé"],
         index=1,
-        format_func=lambda v: {"bon": "Bon état", "moyen": "État moyen", "degrade": "Dégradé"}[v],
+        format_func=lambda x: x.capitalize(),
+        help="Permet d'estimer la part de préparation (piochage, reprises...).",
     )
 
     support_key = st.selectbox(
-        "Support principal",
+        "Type de support principal",
         options=[
             "ENDUIT_CIMENT",
             "ENDUIT_PLATRE",
-            "BETON_PEINT",
-            "MONOCOUCHE",
-            "CREPI",
-            "PIERRE_TAILLE",
-            "PIERRE_APPARENTE",
-            "BRIQUE_PLEINE",
-            "BRIQUE_APPARENTE",
+            "BETON",
+            "BRIQUE",
+            "PIERRE",
         ],
-        format_func=lambda v: v.replace("_", " ").title(),
+        index=0,
+        format_func=lambda x: {
+            "ENDUIT_CIMENT": "Enduit ciment (façade récente)",
+            "ENDUIT_PLATRE": "Enduit plâtre (façade ancienne)",
+            "BETON": "Béton peint",
+            "BRIQUE": "Brique",
+            "PIERRE": "Pierre / moellons",
+        }.get(x, x),
     )
 
-    st.markdown("### Ouvertures")
-    nb_fenetres_petites = st.slider(
-        "Nombre de petites fenêtres visibles",
+    st.markdown("### Ouvertures et garde-corps")
+
+    nb_fenetres_grandes = st.number_input(
+        "Nombre approximatif de grandes fenêtres donnant sur la façade",
         min_value=0,
-        max_value=80,
+        max_value=200,
         value=10,
         step=1,
-    )
-    nb_fenetres_grandes = st.slider(
-        "Nombre de grandes fenêtres / portes-fenêtres",
-        min_value=0,
-        max_value=40,
-        value=4,
-        step=1,
+        help="Seules les grandes fenêtres sont prises en compte (hors petites ouvertures techniques).",
     )
 
-    st.markdown("### Garde-corps et balcons")
-    garde_corps_niveau = st.selectbox(
+    garde_corps_niveau = st.radio(
         "Présence de garde-corps / balcons",
         options=["peu", "moyen", "beaucoup"],
-        format_func=lambda v: {"peu": "Peu", "moyen": "Moyen", "beaucoup": "Beaucoup"}[v],
+        index=1,
+        format_func=lambda x: {
+            "peu": "Peu de garde-corps",
+            "moyen": "Quelques garde-corps",
+            "beaucoup": "Beaucoup de garde-corps",
+        }[x],
     )
 
-    st.markdown("### Chiens-assis / lucarnes")
-    traiter_chiens_assis = st.checkbox("Inclure les chiens-assis / lucarnes dans l’estimation", value=False)
+    st.markdown("### Toiture et chiens-assis")
+
+    traiter_chiens_assis = st.checkbox(
+        "Inclure les chiens-assis (lucarnes en toiture)",
+        value=False,
+    )
     nb_chiens_assis = 0
     if traiter_chiens_assis:
         nb_chiens_assis = st.number_input(
-            "Nombre de chiens-assis / lucarnes",
+            "Nombre approximatif de chiens-assis à traiter",
             min_value=1,
-            max_value=20,
+            max_value=50,
             value=2,
             step=1,
         )
 
-    return {
+    facade_state = {
         "etat_facade": etat_facade,
         "support_key": support_key,
-        "nb_fenetres_petites": int(nb_fenetres_petites),
         "nb_fenetres_grandes": int(nb_fenetres_grandes),
         "garde_corps_niveau": garde_corps_niveau,
         "traiter_chiens_assis": bool(traiter_chiens_assis),
         "nb_chiens_assis": int(nb_chiens_assis),
     }
 
+    return facade_state
 
-def render_contact_form() -> Dict:
-    st.markdown('<div class="lc-title">4. Vos coordonnées</div>', unsafe_allow_html=True)
-    st.markdown(
-        "<div class='lc-subtitle'>Nous envoyons l’estimation détaillée par mail. Vous pouvez ensuite être rappelé.</div>",
-        unsafe_allow_html=True,
-    )
 
-    nom = st.text_input("Nom / Société")
-    email = st.text_input("Adresse e-mail")
-    tel = st.text_input("Téléphone (optionnel)")
-    delai_mois = st.slider(
-        "Délai souhaité avant travaux",
-        min_value=3,
-        max_value=24,
+# ----------------------------------------------------------------------
+# Étape 3 : coordonnées client
+# ----------------------------------------------------------------------
+def render_contact_form(osm_ctx: Dict = None) -> Optional[Dict]:
+    st.subheader("Vos coordonnées")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        nom = st.text_input("Nom / Prénom", value=st.session_state.get("contact_nom", ""))
+    with col2:
+        email = st.text_input("Adresse e-mail", value=st.session_state.get("contact_email", ""))
+
+    tel = st.text_input("Téléphone (facultatif)", value=st.session_state.get("contact_tel", ""))
+
+    delai_mois = st.number_input(
+        "Délai souhaité avant travaux (en mois)",
+        min_value=1,
+        max_value=36,
         value=6,
         step=1,
     )
     urgent = delai_mois <= 3
 
-    return {
-        "nom": nom,
-        "email": email,
-        "tel": tel,
+    contact = {
+        "nom": nom.strip(),
+        "email": email.strip(),
+        "tel": tel.strip(),
         "delai_mois": int(delai_mois),
         "urgent": bool(urgent),
     }
 
+    # On ne valide pas ici : c'est géré dans app.py (bouton désactivé si pas d'email / nom)
+    return contact
+
+
+# ----------------------------------------------------------------------
+# Affichage bandeau prix (preview)
+# ----------------------------------------------------------------------
+def render_price_banner(total_ttc: Optional[float], label: str) -> None:
+    """
+    Bandeau bas de page avec le prix estimatif.
+    """
+    if total_ttc is None:
+        return
+
+    txt = f"{total_ttc:,.0f} € TTC".replace(",", " ").replace(".", ",")
+    st.markdown(
+        f"""
+        <div class="lc-bandeau-prix">
+            <div><b>{label}</b> : {txt}</div>
+            <small>Montant indicatif à confirmer après visite sur place.</small>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
