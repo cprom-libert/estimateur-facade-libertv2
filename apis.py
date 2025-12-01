@@ -1,122 +1,174 @@
+# apis.py
 import requests
-import math
 from typing import List, Dict, Optional
+from math import radians, sin, cos, sqrt, atan2
+
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+
+def _dist_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distance en mètres entre deux points lat/lon (haversine)."""
+    R = 6371000
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return 2 * R * atan2(sqrt(a), sqrt(1 - a))
 
 
 def get_address_suggestions(query: str, limit: int = 5) -> List[Dict]:
-    if len(query.strip()) < 3:
+    """Suggestions d’adresses via Nominatim."""
+    if not query or len(query.strip()) < 3:
         return []
 
-    url = "https://api-adresse.data.gouv.fr/search/"
-    params = {"q": query, "limit": limit, "autocomplete": 1}
-    resp = requests.get(url, params=params, timeout=5)
-    resp.raise_for_status()
-    data = resp.json()
-
-    suggestions = []
-    for feat in data.get("features", []):
-        props = feat.get("properties", {})
-        geom = feat.get("geometry", {})
-        coords = geom.get("coordinates") or [None, None]
-        lon, lat = coords
-        if lat and lon:
-            suggestions.append(
-                {"label": props.get("label"), "lat": lat, "lon": lon}
-            )
-    return suggestions
-
-
-def fetch_osm_context(lat: float, lon: float, radius_m: int = 20) -> Dict:
-    overpass_url = "https://overpass-api.de/api/interpreter"
-    query = f"""
-    [out:json][timeout:25];
-    (
-      way["building"](around:{radius_m},{lat},{lon});
-      relation["building"](around:{radius_m},{lat},{lon});
-    );
-    out body;
-    >;
-    out skel qt;
-    """
-
-    resp = requests.post(overpass_url, data=query.encode("utf-8"), timeout=25)
-    resp.raise_for_status()
-    data = resp.json()
-
-    levels = None
-    has_shop = False
-
-    for el in data.get("elements", []):
-        tags = el.get("tags", {})
-        if not tags:
-            continue
-
-        lvl = tags.get("building:levels") or tags.get("levels")
-        if lvl and levels is None:
-            try:
-                levels = int(lvl)
-            except:
-                pass
-
-        if tags.get("shop"):
-            has_shop = True
-
-    return {"levels": levels, "has_shop": has_shop}
-
-
-# --- Orientation Street View ---
-def _deg_to_rad(deg): return deg * math.pi / 180
-def _rad_to_deg(rad): return rad * 180 / math.pi
-
-
-def _compute_bearing(lat1, lon1, lat2, lon2):
-    phi1 = _deg_to_rad(lat1)
-    phi2 = _deg_to_rad(lat2)
-    dlon = _deg_to_rad(lon2 - lon1)
-
-    y = math.sin(dlon) * math.cos(phi2)
-    x = math.cos(phi1)*math.sin(phi2) - math.sin(phi1)*math.cos(phi2)*math.cos(dlon)
-
-    brng = math.atan2(y, x)
-    return (_rad_to_deg(brng) + 360) % 360
-
-
-def _get_smart_heading(lat, lon, api_key):
-    if not api_key:
-        return None
-
-    meta_url = "https://maps.googleapis.com/maps/api/streetview/metadata"
-    params = {"location": f"{lat},{lon}", "size": "640x400", "key": api_key}
+    headers = {"User-Agent": "LibertEstimation/1.0"}
+    params = {
+        "q": query,
+        "format": "json",
+        "limit": limit,
+        "addressdetails": 1,
+        "countrycodes": "fr",
+    }
 
     try:
-        resp = requests.get(meta_url, params=params, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-    except:
-        return None
+        r = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=5)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return []
 
-    if data.get("status") != "OK":
-        return None
+    out: List[Dict] = []
+    for d in data:
+        try:
+            out.append(
+                {
+                    "label": d.get("display_name", ""),
+                    "lat": float(d["lat"]),
+                    "lon": float(d["lon"]),
+                }
+            )
+        except Exception:
+            continue
 
-    loc = data.get("location") or {}
-    cam_lat = loc.get("lat")
-    cam_lon = loc.get("lng")
-    if not cam_lat or not cam_lon:
-        return None
-
-    return _compute_bearing(cam_lat, cam_lon, lat, lon)
+    return out
 
 
-def build_streetview_embed_url(lat, lon, api_key, pitch=10, fov=90):
+def fetch_osm_context(lat: float, lon: float) -> Dict:
+    """
+    Contexte minimal depuis OSM :
+      - building_type : IMMEUBLE / PAVILLON
+      - facade_rue_m  : plus grand segment
+      - facade_cour_m : second plus grand segment
+      - depth_m       : moyenne des autres segments
+      - levels_osm    : niveaux si renseigné
+      - has_cour      : True si façade cour significative
+    """
+    query = f"""
+    [out:json][timeout:10];
+    (
+      way["building"](around:50,{lat},{lon});
+    );
+    out geom;
+    """
+
+    headers = {"User-Agent": "LibertEstimation/1.0"}
+
+    def _minimal() -> Dict:
+        return {
+            "building_type": "IMMEUBLE",
+            "facade_rue_m": None,
+            "facade_cour_m": None,
+            "depth_m": None,
+            "levels_osm": None,
+            "has_cour": False,
+            "is_haussmann_suspected": False,
+        }
+
+    try:
+        r = requests.post(OVERPASS_URL, data={"data": query}, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return _minimal()
+
+    ways = [e for e in data.get("elements", []) if e.get("type") == "way" and "geometry" in e]
+    if not ways:
+        return _minimal()
+
+    way = ways[0]
+    geom = way["geometry"]
+    tags = way.get("tags", {})
+
+    coords = [(p["lat"], p["lon"]) for p in geom]
+    if len(coords) < 3:
+        return _minimal()
+    if coords[0] != coords[-1]:
+        coords.append(coords[0])
+
+    segments = []
+    for i in range(len(coords) - 1):
+        lat1, lon1 = coords[i]
+        lat2, lon2 = coords[i + 1]
+        d = _dist_m(lat1, lon1, lat2, lon2)
+        segments.append({"length": d, "p1": coords[i], "p2": coords[i + 1]})
+
+    if not segments:
+        return _minimal()
+
+    segs_sorted = sorted(segments, key=lambda s: s["length"], reverse=True)
+    seg_rue = segs_sorted[0]
+    seg_cour = segs_sorted[1] if len(segs_sorted) > 1 else None
+
+    facade_rue_m = seg_rue["length"]
+    facade_cour_m = seg_cour["length"] if seg_cour else None
+
+    others = [s["length"] for s in segs_sorted[2:]]
+    depth_m = sum(others) / len(others) if others else facade_rue_m
+
+    building_tag = tags.get("building", "")
+    if building_tag in ("house", "detached", "semidetached_house"):
+        building_type = "PAVILLON"
+    else:
+        building_type = "IMMEUBLE"
+
+    levels_osm = None
+    if "building:levels" in tags:
+        try:
+            levels_osm = int(tags["building:levels"])
+        except Exception:
+            levels_osm = None
+
+    has_cour = bool(facade_cour_m and facade_cour_m > 0.4 * facade_rue_m)
+
+    is_haussmann_suspected = (
+        tags.get("building") == "apartments"
+        and levels_osm is not None
+        and 4 <= levels_osm <= 7
+        and facade_rue_m > 10
+    )
+
+    return {
+        "building_type": building_type,
+        "facade_rue_m": facade_rue_m,
+        "facade_cour_m": facade_cour_m,
+        "depth_m": depth_m,
+        "levels_osm": levels_osm,
+        "has_cour": has_cour,
+        "is_haussmann_suspected": is_haussmann_suspected,
+    }
+
+
+def build_streetview_embed_url(
+    lat: float,
+    lon: float,
+    api_key: Optional[str] = None,
+    heading: float = 0.0,
+) -> str:
+    """URL d’embed Street View (ou simple carte si pas de clé)."""
     if not api_key:
-        return "https://upload.wikimedia.org/wikipedia/commons/9/9b/Rue_des_Écoles_-_Paris_V_-_2021-07-31_-_1.jpg"
+        return f"https://www.google.com/maps?q={lat},{lon}&z=19&output=embed"
 
-    heading = _get_smart_heading(lat, lon, api_key)
-
-    base = "https://www.google.com/maps/embed/v1/streetview"
-    params = f"key={api_key}&location={lat},{lon}&fov={fov}"
-    if heading:
-        params += f"&heading={heading:.1f}"
-    params += f"&pitch={pitch}"
-
-    return f"{base}?{params}"
+    return (
+        "https://www.google.com/maps/embed/v1/streetview"
+        f"?key={api_key}&location={lat},{lon}&heading={heading}&pitch=0&fov=90"
+    )

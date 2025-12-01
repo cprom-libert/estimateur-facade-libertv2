@@ -1,121 +1,6 @@
 # pricing.py
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
-
-
-# Prix moyens pour Paris (positionnement pro / haut de gamme)
-DB_PRIX = {
-    "LOGISTIQUE": {
-        "BASE_VIE": {
-            "label": "Base vie de chantier",
-            "unit": "forfait",
-            "pu": 3500.0,
-        },
-        "AUTORISATION": {
-            "label": "Droits de voirie / autorisations",
-            "unit": "forfait",
-            "pu": 1800.0,
-        },
-        "ECHAFAUDAGE": {
-            "label": "Échafaudage de façade",
-            "unit": "m²",
-            "pu": 65.0,  # €/m² de façade développée
-        },
-    },
-    "FACADES": {
-        "PLATRE_ANCIEN": {
-            "label": "Façade plâtre ancien",
-            "net": 22.0,               # €/m²
-            "fin": 60.0,               # €/m²
-            "ratio_reparation": 0.35,  # 35 % de surface réparée (état MOYEN)
-            "pu_reparation": 200.0,    # €/m² réparé
-        },
-        "PIERRE_TAILLE": {
-            "label": "Façade pierre de taille",
-            "net": 28.0,
-            "fin": 80.0,
-            "ratio_reparation": 0.15,
-            "pu_reparation": 250.0,
-        },
-        "BRIQUE": {
-            "label": "Façade briques",
-            "net": 20.0,
-            "fin": 50.0,
-            "ratio_reparation": 0.22,
-            "pu_reparation": 190.0,
-        },
-        "BETON": {
-            "label": "Façade béton",
-            "net": 18.0,
-            "fin": 50.0,
-            "ratio_reparation": 0.25,
-            "pu_reparation": 210.0,
-        },
-        "PAVILLON_ENDUIT": {
-            "label": "Façade pavillon enduit",
-            "net": 18.0,
-            "fin": 45.0,
-            "ratio_reparation": 0.20,
-            "pu_reparation": 170.0,
-        },
-    },
-    "ZINGUERIE": {
-        "BANDEAU": {
-            "label": "Habillage de bandeaux en zinc",
-            "unit": "ml",
-            "pu": 150.0,
-        },
-        "DESCENTE": {
-            "label": "Réfection descente EP",
-            "unit": "u",
-            "pu": 260.0,
-        },
-        "GARDES_CORPS": {
-            "label": "Révision garde-corps métalliques",
-            "unit": "ml",
-            "pu": 110.0,
-        },
-        "APPUIS_PIERRE": {
-            "label": "Réfection appuis de fenêtres",
-            "unit": "ml",
-            "pu": 95.0,
-        },
-    },
-    "TOITURES": {
-        "DEBORD_TOIT": {
-            "label": "Traitement débords de toit / avancées",
-            "unit": "ml",
-            "pu": 120.0,
-        },
-        "ACROTERES": {
-            "label": "Réfection acrotères",
-            "unit": "ml",
-            "pu": 140.0,
-        },
-    },
-    "BOISERIES": {
-        "PORTE_ENTREE": {
-            "label": "Porte d’entrée bois",
-            "unit": "u",
-            "pu": 1800.0,
-        },
-        "PORTE_COCHERE": {
-            "label": "Porte cochère bois",
-            "unit": "u",
-            "pu": 5500.0,
-        },
-    },
-    "COMMERCE": {
-        "RDC_RETAIL": {
-            "label": "Zone commerciale en RDC (vitrines, enseignes)",
-            "unit": "forfait",
-            "pu": 3500.0,
-        }
-    },
-}
-
-# Hauteur moyenne par niveau
-NIVEAU_HAUTEUR = 3.0  # m / niveau
+from typing import Dict, List, Tuple
 
 
 @dataclass
@@ -126,173 +11,441 @@ class Geometry:
     nb_facades: int
 
 
-def est_pavillon(building_type: str) -> bool:
-    return building_type.upper().startswith("PAVILLON")
+BASE_FINISH_PRICES: Dict[str, float] = {
+    "D3": 80.0,
+    "SILOXANE": 90.0,
+    "MINERAL": 105.0,
+}
+
+ETAT_COEFFS: Dict[str, float] = {
+    "bon": 0.95,
+    "moyen": 1.00,
+    "degrade": 1.15,
+}
+
+PARIS_COEFF = 1.20
+HAUSSMANN_COEFF = 1.20
+
+PRIX_ECHAFAUD_M2 = 40.0
+
+PRIX_POINTS: Dict[str, float] = {
+    "fenetre_petite": 55.0,
+    "fenetre_grande": 85.0,
+    "garde_corps_simple_ml": 50.0,
+    "garde_corps_fer_forge_ml": 70.0,
+    "garde_corps_balcon_ml": 95.0,
+    "descente_ep_ml": 35.0,
+    "bandeau_ml": 45.0,
+    "zinguerie_ml": 75.0,
+    "grille_aeration_u": 15.0,
+    "grillage_protection_ml": 25.0,
+    "grillage_galva_ml": 70.0,
+    "microfissure_ml": 10.0,
+    "fissure_ouverte_ml": 20.0,
+    "reprise_enduit_m2": 25.0,
+    "reprise_lourde_m2": 45.0,
+    "chien_assis_u": 320.0,
+}
 
 
-def estimate_geometry(building_type: str, niveaux: int, largeur_facade: float) -> Geometry:
-    """
-    building_type : "IMMEUBLE" ou "PAVILLON"
-    niveaux       : nombre de niveaux principaux
-    largeur_facade: largeur principale sur rue (m)
-    """
-    hauteur = max(1, niveaux) * NIVEAU_HAUTEUR
+def infer_finition_from_support(support_key: str, etat_facade: str) -> str:
+    s = (support_key or "").upper()
+    etat_norm = (etat_facade or "moyen").lower()
 
-    if est_pavillon(building_type):
-        nb_facades = 4
-    else:
-        nb_facades = 1
+    supports_enduit = {
+        "ENDUIT_CIMENT",
+        "ENDUIT_PLATRE",
+        "BETON_PEINT",
+        "MONOCOUCHE",
+        "CREPI",
+        "ENDUIT_MORTIER",
+    }
+    supports_mineral = {
+        "PIERRE_TAILLE",
+        "PIERRE_APPARENTE",
+        "BRIQUE_PLEINE",
+        "BRIQUE_APPARENTE",
+    }
 
-    perimetre = largeur_facade * nb_facades
-    surface_facades = hauteur * perimetre
+    if s in supports_enduit:
+        if etat_norm == "degrade":
+            return "SILOXANE"
+        return "D3"
 
-    return Geometry(
-        hauteur=hauteur,
-        surface_facades=surface_facades,
-        perimetre=perimetre,
-        nb_facades=nb_facades,
-    )
+    if s in supports_mineral:
+        if etat_norm == "degrade":
+            return "MINERAL"
+        return "SILOXANE"
+
+    return "D3"
 
 
-def _adjust_ratio_for_state(base_ratio: float, facade_state: str) -> float:
-    """
-    Ajuste le ratio de réparations selon l’état de la façade.
-    facade_state : "BON" / "MOYEN" / "DEGRADE"
-    """
-    state = facade_state.upper()
-    if state == "BON":
-        coeff = 0.6   # 60 % du ratio de base
-    elif state == "DEGRADE":
-        coeff = 1.4   # 140 % du ratio de base
-    else:  # MOYEN
-        coeff = 1.0
+def compute_m2_price(
+    support_key: str,
+    etat_facade: str,
+    is_haussmann: bool,
+) -> Tuple[str, float]:
+    finition = infer_finition_from_support(support_key, etat_facade)
+    base = BASE_FINISH_PRICES.get(finition, BASE_FINISH_PRICES["D3"])
 
-    return base_ratio * coeff
+    etat_norm = (etat_facade or "moyen").lower()
+    if etat_norm not in ETAT_COEFFS:
+        etat_norm = "moyen"
+    coef_etat = ETAT_COEFFS[etat_norm]
+
+    coef_paris = PARIS_COEFF
+    coef_hauss = HAUSSMANN_COEFF if is_haussmann else 1.0
+
+    prix_m2 = base * coef_etat * coef_paris * coef_hauss
+    return finition, prix_m2
 
 
 def build_pricing(
     geom: Geometry,
     support_key: str,
     options: Dict,
-    facade_state: str,
+    etat_facade: str,
 ) -> Tuple[List[Dict], float]:
     """
-    options attend par exemple :
-    {
-        "porte_entree": bool,
-        "porte_cochere": bool,
-        "has_commerce_rdc": bool,
-        "has_bandeaux": bool,
-        "has_appuis": bool,
-        "has_toiture_debord": bool,
-        "has_acroteres": bool,
-        "nb_descente_ep": int,
-    }
-    facade_state : "BON" / "MOYEN" / "DEGRADE"
+    Renvoie (lignes, total_ht).
+    Chaque ligne contient :
+      code, designation, quantite, unite, pu, montant, famille
+    Familles utilisées :
+      INSTALLATION, PROTECTION, ECHAUFAUDAGE, RAVALEMENT,
+      ZINGUERIE, PEINTURE, NETTOYAGE
     """
     lignes: List[Dict] = []
     total = 0.0
 
-    # Fonction interne pour ajouter une ligne
-    def add_line(section: str, label: str, qty: float, unit: str, pu: float):
-        nonlocal total
-        mt = qty * pu
+    is_haussmann = bool(options.get("is_haussmann", False))
+    traiter_chiens_assis = bool(options.get("traiter_chiens_assis", False))
+    nb_chiens_assis = int(options.get("nb_chiens_assis", 0) or 0)
+    niveaux = int(options.get("niveaux", 1) or 1)
+    if niveaux < 1:
+        niveaux = 1
+
+    finition, prix_m2 = compute_m2_price(
+        support_key=support_key,
+        etat_facade=etat_facade,
+        is_haussmann=is_haussmann,
+    )
+
+    # 1) Ravalement (support + peinture)
+    montant_raval = geom.surface_facades * prix_m2
+    lignes.append(
+        {
+            "code": "RAVAL",
+            "designation": f"Travaux de ravalement (préparation + revêtement {finition})",
+            "quantite": round(geom.surface_facades, 1),
+            "unite": "m2",
+            "pu": round(prix_m2, 2),
+            "montant": round(montant_raval, 2),
+            "famille": "RAVALEMENT",
+        }
+    )
+    total += montant_raval
+
+    # 2) Échafaudage (avec étage supplémentaire si chiens-assis)
+    surface_base_echaf = geom.surface_facades
+    if traiter_chiens_assis and nb_chiens_assis > 0:
+        surface_extra = surface_base_echaf / niveaux
+    else:
+        surface_extra = 0.0
+
+    surface_totale_echaf = surface_base_echaf + surface_extra
+    montant_echaf = surface_totale_echaf * PRIX_ECHAFAUD_M2
+
+    designation_echaf = "Échafaudage de façade"
+    if surface_extra > 0:
+        designation_echaf += " (avec un étage supplémentaire pour chiens-assis)"
+
+    lignes.append(
+        {
+            "code": "ECHAF",
+            "designation": designation_echaf,
+            "quantite": round(surface_totale_echaf, 1),
+            "unite": "m2",
+            "pu": round(PRIX_ECHAFAUD_M2, 2),
+            "montant": round(montant_echaf, 2),
+            "famille": "ECHAUFAUDAGE",
+        }
+    )
+    total += montant_echaf
+
+    # 3) Maçonneries / fissures (tout en RAVALEMENT)
+    surface_reprise_lourde = float(options.get("surface_reprises_lourdes_detectee", 0.0) or 0.0)
+    surface_min = 0.08 * geom.surface_facades
+    surface_reprise_lourde = max(surface_reprise_lourde, surface_min)
+
+    if surface_reprise_lourde > 0:
+        pu = PRIX_POINTS["reprise_lourde_m2"]
+        m = surface_reprise_lourde * pu
         lignes.append(
             {
-                "section": section,
-                "designation": label,
-                "quantite": round(qty, 2),
-                "unite": unit,
-                "pu": pu,
-                "montant": round(mt, 2),
+                "code": "MAC_RL",
+                "designation": "Reprises lourdes d’enduit (piquage + réenduit)",
+                "quantite": round(surface_reprise_lourde, 1),
+                "unite": "m2",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "RAVALEMENT",
             }
         )
-        total += mt
+        total += m
 
-    # 1. LOGISTIQUE
-    base_vie = DB_PRIX["LOGISTIQUE"]["BASE_VIE"]
-    autorisation = DB_PRIX["LOGISTIQUE"]["AUTORISATION"]
-    echafaudage = DB_PRIX["LOGISTIQUE"]["ECHAFAUDAGE"]
+    surface_reprise_enduit = float(options.get("surface_reprises_enduit_detectee", 0.0) or 0.0)
+    if surface_reprise_enduit > 0:
+        pu = PRIX_POINTS["reprise_enduit_m2"]
+        m = surface_reprise_enduit * pu
+        lignes.append(
+            {
+                "code": "MAC_RE",
+                "designation": "Reprises ponctuelles d’enduit",
+                "quantite": round(surface_reprise_enduit, 1),
+                "unite": "m2",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "RAVALEMENT",
+            }
+        )
+        total += m
 
-    add_line("LOGISTIQUE", base_vie["label"], 1, base_vie["unit"], base_vie["pu"])
-    add_line("LOGISTIQUE", autorisation["label"], 1, autorisation["unit"], autorisation["pu"])
-    add_line(
-        "LOGISTIQUE",
-        echafaudage["label"],
-        geom.surface_facades,
-        echafaudage["unit"],
-        echafaudage["pu"],
+    ml_micro = float(options.get("ml_microfissures", 0.0) or 0.0)
+    if ml_micro > 0:
+        pu = PRIX_POINTS["microfissure_ml"]
+        m = ml_micro * pu
+        lignes.append(
+            {
+                "code": "MAC_MICRO",
+                "designation": "Traitement des microfissures (≤ 2 mm)",
+                "quantite": round(ml_micro, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "RAVALEMENT",
+            }
+        )
+        total += m
+
+    ml_fiss = float(options.get("ml_fissures_ouvertes", 0.0) or 0.0)
+    if ml_fiss > 0:
+        pu = PRIX_POINTS["fissure_ouverte_ml"]
+        m = ml_fiss * pu
+        lignes.append(
+            {
+                "code": "MAC_FISS",
+                "designation": "Traitement des fissures ouvertes (> 2 mm)",
+                "quantite": round(ml_fiss, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "RAVALEMENT",
+            }
+        )
+        total += m
+
+    # 4) Fenêtres / peinture menuiseries
+    nb_fen_p = int(options.get("nb_fenetres_petites", 0) or 0)
+    if nb_fen_p > 0:
+        pu = PRIX_POINTS["fenetre_petite"]
+        m = nb_fen_p * pu
+        lignes.append(
+            {
+                "code": "FEN_P",
+                "designation": "Fenêtres petites (préparation + peinture)",
+                "quantite": nb_fen_p,
+                "unite": "u",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "PEINTURE",
+            }
+        )
+        total += m
+
+    nb_fen_g = int(options.get("nb_fenetres_grandes", 0) or 0)
+    if nb_fen_g > 0:
+        pu = PRIX_POINTS["fenetre_grande"]
+        m = nb_fen_g * pu
+        lignes.append(
+            {
+                "code": "FEN_G",
+                "designation": "Fenêtres grandes / portes-fenêtres (préparation + peinture)",
+                "quantite": nb_fen_g,
+                "unite": "u",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "PEINTURE",
+            }
+        )
+        total += m
+
+    # 5) Garde-corps / zinguerie
+    ml_gc_fer = float(options.get("ml_garde_corps_fer_forge", 0.0) or 0.0)
+    if ml_gc_fer > 0:
+        pu = PRIX_POINTS["garde_corps_fer_forge_ml"]
+        m = ml_gc_fer * pu
+        lignes.append(
+            {
+                "code": "GC_FER",
+                "designation": "Garde-corps fer forgé",
+                "quantite": round(ml_gc_fer, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "ZINGUERIE",
+            }
+        )
+        total += m
+
+    ml_gc_balcon = float(options.get("ml_garde_corps_balcon", 0.0) or 0.0)
+    if ml_gc_balcon > 0:
+        pu = PRIX_POINTS["garde_corps_balcon_ml"]
+        m = ml_gc_balcon * pu
+        lignes.append(
+            {
+                "code": "GC_BALC",
+                "designation": "Balcons avec garde-corps",
+                "quantite": round(ml_gc_balcon, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "ZINGUERIE",
+            }
+        )
+        total += m
+
+    ml_dep = float(options.get("ml_descente_ep", 0.0) or 0.0)
+    if ml_dep > 0:
+        pu = PRIX_POINTS["descente_ep_ml"]
+        m = ml_dep * pu
+        lignes.append(
+            {
+                "code": "DEP",
+                "designation": "Descentes d’eaux pluviales",
+                "quantite": round(ml_dep, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "ZINGUERIE",
+            }
+        )
+        total += m
+
+    ml_bandeaux = float(options.get("ml_bandeaux", 0.0) or 0.0)
+    if ml_bandeaux > 0:
+        pu = PRIX_POINTS["bandeau_ml"]
+        m = ml_bandeaux * pu
+        lignes.append(
+            {
+                "code": "BAND",
+                "designation": "Bandeaux / corniches",
+                "quantite": round(ml_bandeaux, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "ZINGUERIE",
+            }
+        )
+        total += m
+
+    ml_zing = float(options.get("ml_zinguerie", 0.0) or 0.0)
+    if ml_zing > 0:
+        pu = PRIX_POINTS["zinguerie_ml"]
+        m = ml_zing * pu
+        lignes.append(
+            {
+                "code": "ZINC",
+                "designation": "Éléments de zinguerie (tablettes, couvertines…)",
+                "quantite": round(ml_zing, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "ZINGUERIE",
+            }
+        )
+        total += m
+
+    nb_grilles = int(options.get("nb_grilles_aeration", 0) or 0)
+    if nb_grilles > 0:
+        pu = PRIX_POINTS["grille_aeration_u"]
+        m = nb_grilles * pu
+        lignes.append(
+            {
+                "code": "GRIL",
+                "designation": "Grilles d’aération / ventilation",
+                "quantite": nb_grilles,
+                "unite": "u",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "RAVALEMENT",
+            }
+        )
+        total += m
+
+    ml_grillage_prot = float(options.get("ml_grillage_protection", 0.0) or 0.0)
+    if ml_grillage_prot > 0:
+        pu = PRIX_POINTS["grillage_protection_ml"]
+        m = ml_grillage_prot * pu
+        lignes.append(
+            {
+                "code": "GRILL_PROT",
+                "designation": "Grillage de protection (pied d’immeuble)",
+                "quantite": round(ml_grillage_prot, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "INSTALLATION",
+            }
+        )
+        total += m
+
+    ml_grillage_galva = float(options.get("ml_grillage_galva", 0.0) or 0.0)
+    if ml_grillage_galva > 0:
+        pu = PRIX_POINTS["grillage_galva_ml"]
+        m = ml_grillage_galva * pu
+        lignes.append(
+            {
+                "code": "GRILL_GALV",
+                "designation": "Garde-corps grillagés galvanisés",
+                "quantite": round(ml_grillage_galva, 1),
+                "unite": "ml",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "ZINGUERIE",
+            }
+        )
+        total += m
+
+    # 6) Chiens-assis (peinture et reprises locales)
+    if traiter_chiens_assis and nb_chiens_assis > 0:
+        pu = PRIX_POINTS["chien_assis_u"]
+        m = nb_chiens_assis * pu
+        lignes.append(
+            {
+                "code": "CHIENS_ASSIS",
+                "designation": "Chiens-assis / lucarnes (préparation + peinture)",
+                "quantite": nb_chiens_assis,
+                "unite": "u",
+                "pu": round(pu, 2),
+                "montant": round(m, 2),
+                "famille": "PEINTURE",
+            }
+        )
+        total += m
+
+    # 7) Nettoyage forfaitaire
+    montant_nettoyage = total * 0.01
+    lignes.append(
+        {
+            "code": "NETTOYAGE",
+            "designation": "Nettoyage final et repli de chantier",
+            "quantite": 1,
+            "unite": "forfait",
+            "pu": round(montant_nettoyage, 2),
+            "montant": round(montant_nettoyage, 2),
+            "famille": "NETTOYAGE",
+        }
     )
-
-    # 2. FAÇADES (nettoyage / réparations / finition)
-    facade_prof = DB_PRIX["FACADES"][support_key]
-    surface = geom.surface_facades
-
-    base_ratio = facade_prof["ratio_reparation"]
-    ratio = _adjust_ratio_for_state(base_ratio, facade_state)
-    pu_reparation = facade_prof["pu_reparation"]
-
-    # Nettoyage
-    add_line(
-        "FAÇADES",
-        f"{facade_prof['label']} – Nettoyage",
-        surface,
-        "m²",
-        facade_prof["net"],
-    )
-
-    # Réparations (piochage + reconstitution)
-    add_line(
-        "FAÇADES",
-        f"{facade_prof['label']} – Réparations ponctuelles",
-        surface * ratio,
-        "m²",
-        pu_reparation,
-    )
-
-    # Finition
-    add_line(
-        "FAÇADES",
-        f"{facade_prof['label']} – Finition peinture",
-        surface,
-        "m²",
-        facade_prof["fin"],
-    )
-
-    # 3. BOISERIES / PORTES
-    if options.get("porte_entree"):
-        porte = DB_PRIX["BOISERIES"]["PORTE_ENTREE"]
-        add_line("BOISERIES", porte["label"], 1, porte["unit"], porte["pu"])
-
-    if options.get("porte_cochere"):
-        porte = DB_PRIX["BOISERIES"]["PORTE_COCHERE"]
-        add_line("BOISERIES", porte["label"], 1, porte["unit"], porte["pu"])
-
-    # 4. COMMERCE RDC
-    if options.get("has_commerce_rdc"):
-        retail = DB_PRIX["COMMERCE"]["RDC_RETAIL"]
-        add_line("COMMERCE", retail["label"], 1, retail["unit"], retail["pu"])
-
-    # 5. ZINGUERIE
-    perimetre = geom.perimetre
-    z = DB_PRIX["ZINGUERIE"]
-
-    if options.get("has_bandeaux"):
-        add_line("ZINGUERIE", z["BANDEAU"]["label"], perimetre, z["BANDEAU"]["unit"], z["BANDEAU"]["pu"])
-
-    if options.get("has_appuis"):
-        add_line("ZINGUERIE", z["APPUIS_PIERRE"]["label"], perimetre, z["APPUIS_PIERRE"]["unit"], z["APPUIS_PIERRE"]["pu"])
-
-    nb_desc = int(options.get("nb_descente_ep") or 0)
-    if nb_desc > 0:
-        add_line("ZINGUERIE", z["DESCENTE"]["label"], nb_desc, z["DESCENTE"]["unit"], z["DESCENTE"]["pu"])
-
-    # 6. TOITURES
-    t = DB_PRIX["TOITURES"]
-    if options.get("has_toiture_debord"):
-        add_line("TOITURES", t["DEBORD_TOIT"]["label"], perimetre, t["DEBORD_TOIT"]["unit"], t["DEBORD_TOIT"]["pu"])
-
-    if options.get("has_acroteres"):
-        add_line("TOITURES", t["ACROTERES"]["label"], perimetre, t["ACROTERES"]["unit"], t["ACROTERES"]["pu"])
+    total += montant_nettoyage
 
     return lignes, round(total, 2)
