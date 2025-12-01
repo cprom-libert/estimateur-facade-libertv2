@@ -1,103 +1,13 @@
-# pricing.py
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 
 @dataclass
 class Geometry:
-    hauteur: float
-    surface_facades: float
-    perimetre: float
-    nb_facades: int
-
-
-BASE_FINISH_PRICES: Dict[str, float] = {
-    "D3": 80.0,
-    "SILOXANE": 90.0,
-    "MINERAL": 105.0,
-}
-
-ETAT_COEFFS: Dict[str, float] = {
-    "bon": 0.95,
-    "moyen": 1.00,
-    "degrade": 1.15,
-}
-
-PARIS_COEFF = 1.20
-HAUSSMANN_COEFF = 1.20
-
-PRIX_ECHAFAUD_M2 = 40.0
-
-PRIX_POINTS: Dict[str, float] = {
-    "fenetre_petite": 55.0,
-    "fenetre_grande": 85.0,
-    "garde_corps_simple_ml": 50.0,
-    "garde_corps_fer_forge_ml": 70.0,
-    "garde_corps_balcon_ml": 95.0,
-    "descente_ep_ml": 35.0,
-    "bandeau_ml": 45.0,
-    "zinguerie_ml": 75.0,
-    "grille_aeration_u": 15.0,
-    "grillage_protection_ml": 25.0,
-    "grillage_galva_ml": 70.0,
-    "microfissure_ml": 10.0,
-    "fissure_ouverte_ml": 20.0,
-    "reprise_enduit_m2": 25.0,
-    "reprise_lourde_m2": 45.0,
-    "chien_assis_u": 320.0,
-}
-
-
-def infer_finition_from_support(support_key: str, etat_facade: str) -> str:
-    s = (support_key or "").upper()
-    etat_norm = (etat_facade or "moyen").lower()
-
-    supports_enduit = {
-        "ENDUIT_CIMENT",
-        "ENDUIT_PLATRE",
-        "BETON_PEINT",
-        "MONOCOUCHE",
-        "CREPI",
-        "ENDUIT_MORTIER",
-    }
-    supports_mineral = {
-        "PIERRE_TAILLE",
-        "PIERRE_APPARENTE",
-        "BRIQUE_PLEINE",
-        "BRIQUE_APPARENTE",
-    }
-
-    if s in supports_enduit:
-        if etat_norm == "degrade":
-            return "SILOXANE"
-        return "D3"
-
-    if s in supports_mineral:
-        if etat_norm == "degrade":
-            return "MINERAL"
-        return "SILOXANE"
-
-    return "D3"
-
-
-def compute_m2_price(
-    support_key: str,
-    etat_facade: str,
-    is_haussmann: bool,
-) -> Tuple[str, float]:
-    finition = infer_finition_from_support(support_key, etat_facade)
-    base = BASE_FINISH_PRICES.get(finition, BASE_FINISH_PRICES["D3"])
-
-    etat_norm = (etat_facade or "moyen").lower()
-    if etat_norm not in ETAT_COEFFS:
-        etat_norm = "moyen"
-    coef_etat = ETAT_COEFFS[etat_norm]
-
-    coef_paris = PARIS_COEFF
-    coef_hauss = HAUSSMANN_COEFF if is_haussmann else 1.0
-
-    prix_m2 = base * coef_etat * coef_paris * coef_hauss
-    return finition, prix_m2
+    hauteur: float          # hauteur totale de façade (m)
+    surface_facades: float  # surface totale de façades traitées (m²)
+    perimetre: float        # périmètre utile pour linéaires (m)
+    nb_facades: int         # nombre de façades traitées
 
 
 def build_pricing(
@@ -105,347 +15,291 @@ def build_pricing(
     support_key: str,
     options: Dict,
     etat_facade: str,
-) -> Tuple[List[Dict], float]:
+) -> Tuple[List[Dict,], float]:
     """
-    Renvoie (lignes, total_ht).
-    Chaque ligne contient :
-      code, designation, quantite, unite, pu, montant, famille
-    Familles utilisées :
-      INSTALLATION, PROTECTION, ECHAUFAUDAGE, RAVALEMENT,
-      ZINGUERIE, PEINTURE, NETTOYAGE
+    Construit l'estimation détaillée poste par poste.
+    Retourne (lignes, total_ttc).
+
+    - Tous les prix sont en TTC.
+    - On reste dans la moyenne du marché parisien.
     """
+
     lignes: List[Dict] = []
-    total = 0.0
+    total_ttc: float = 0.0
 
-    is_haussmann = bool(options.get("is_haussmann", False))
-    traiter_chiens_assis = bool(options.get("traiter_chiens_assis", False))
-    nb_chiens_assis = int(options.get("nb_chiens_assis", 0) or 0)
-    niveaux = int(options.get("niveaux", 1) or 1)
-    if niveaux < 1:
-        niveaux = 1
+    surface = max(geom.surface_facades, 0.0)
+    perimetre = max(geom.perimetre, 0.0)
+    niveaux = max(int(options.get("niveaux", 5)), 1)
 
-    finition, prix_m2 = compute_m2_price(
-        support_key=support_key,
-        etat_facade=etat_facade,
-        is_haussmann=is_haussmann,
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def add_line(
+        famille: str,
+        designation: str,
+        quantite: float,
+        unite: str,
+        pu_ttc: float,
+        help_text: str,
+    ) -> None:
+        nonlocal total_ttc, lignes
+        q = float(quantite or 0.0)
+        if q <= 0 or pu_ttc <= 0:
+            return
+        mt = q * pu_ttc
+        lignes.append(
+            {
+                "famille": famille,
+                "designation": designation,
+                "quantite": round(q, 2),
+                "unite": unite,
+                "pu_ttc": pu_ttc,
+                "montant": mt,
+                "help": help_text,
+            }
+        )
+        total_ttc += mt
+
+    def ratio_piochage(etat: str, support: str) -> float:
+        etat = (etat or "moyen").lower()
+        base = {
+            "bon": 0.05,
+            "moyen": 0.15,
+            "degrade": 0.35,
+            "dégradé": 0.35,
+        }.get(etat, 0.15)
+
+        support = (support or "").upper()
+        # pierre / brique : on piochage souvent moins
+        if "PIERRE" in support or "BRIQUE" in support:
+            base *= 0.5
+        return base
+
+    # ------------------------------------------------------------------
+    # INSTALLATION
+    # ------------------------------------------------------------------
+    add_line(
+        "INSTALLATION",
+        "Autorisations administratives (occupation du domaine public)",
+        1,
+        "forfait",
+        700.0,
+        "Demandes d'autorisations en mairie pour installer échafaudage et chantier sur rue.",
+    )
+    add_line(
+        "INSTALLATION",
+        "Cantonnement et installation de chantier",
+        1,
+        "forfait",
+        650.0,
+        "Mise en place de la base de vie du chantier : clôtures, signalisation, zone de stockage.",
     )
 
-    # 1) Ravalement (support + peinture)
-    montant_raval = geom.surface_facades * prix_m2
-    lignes.append(
-        {
-            "code": "RAVAL",
-            "designation": f"Travaux de ravalement (préparation + revêtement {finition})",
-            "quantite": round(geom.surface_facades, 1),
-            "unite": "m2",
-            "pu": round(prix_m2, 2),
-            "montant": round(montant_raval, 2),
-            "famille": "RAVALEMENT",
-        }
+    # ------------------------------------------------------------------
+    # PRÉPARATION
+    # ------------------------------------------------------------------
+    # Échafaudage sur toute la surface traitée
+    add_line(
+        "PREPARATION",
+        "Échafaudage de façade",
+        surface,
+        "m²",
+        39.0,
+        "Structure temporaire permettant de travailler en hauteur sur toute la façade en sécurité.",
     )
-    total += montant_raval
 
-    # 2) Échafaudage (avec étage supplémentaire si chiens-assis)
-    surface_base_echaf = geom.surface_facades
-    if traiter_chiens_assis and nb_chiens_assis > 0:
-        surface_extra = surface_base_echaf / niveaux
-    else:
-        surface_extra = 0.0
-
-    surface_totale_echaf = surface_base_echaf + surface_extra
-    montant_echaf = surface_totale_echaf * PRIX_ECHAFAUD_M2
-
-    designation_echaf = "Échafaudage de façade"
-    if surface_extra > 0:
-        designation_echaf += " (avec un étage supplémentaire pour chiens-assis)"
-
-    lignes.append(
-        {
-            "code": "ECHAF",
-            "designation": designation_echaf,
-            "quantite": round(surface_totale_echaf, 1),
-            "unite": "m2",
-            "pu": round(PRIX_ECHAFAUD_M2, 2),
-            "montant": round(montant_echaf, 2),
-            "famille": "ECHAUFAUDAGE",
-        }
+    # Nettoyage haute pression
+    add_line(
+        "PREPARATION",
+        "Nettoyage de façade haute pression",
+        surface,
+        "m²",
+        14.0,
+        "Nettoyage à l'eau sous pression pour enlever salissures, mousses et poussières avant travaux.",
     )
-    total += montant_echaf
 
-    # 3) Maçonneries / fissures (tout en RAVALEMENT)
-    surface_reprise_lourde = float(options.get("surface_reprises_lourdes_detectee", 0.0) or 0.0)
-    surface_min = 0.08 * geom.surface_facades
-    surface_reprise_lourde = max(surface_reprise_lourde, surface_min)
+    # Piochage + armature sur une partie de la surface
+    r_pioch = ratio_piochage(etat_facade, support_key)
+    surf_pioch = surface * r_pioch
 
-    if surface_reprise_lourde > 0:
-        pu = PRIX_POINTS["reprise_lourde_m2"]
-        m = surface_reprise_lourde * pu
-        lignes.append(
-            {
-                "code": "MAC_RL",
-                "designation": "Reprises lourdes d’enduit (piquage + réenduit)",
-                "quantite": round(surface_reprise_lourde, 1),
-                "unite": "m2",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "RAVALEMENT",
-            }
+    add_line(
+        "PREPARATION",
+        "Piochage des enduits dégradés et évacuation des gravats",
+        surf_pioch,
+        "m²",
+        95.0,
+        "Dépose manuelle des enduits qui sonnent creux ou se décollent, évacuation en décharge.",
+    )
+    add_line(
+        "PREPARATION",
+        "Pose d'armature (toile de renfort) sur zones fragilisées",
+        surf_pioch,
+        "m²",
+        30.0,
+        "Pose d'une trame de renfort pour stabiliser les supports fissurés avant enduit.",
+    )
+
+    # ------------------------------------------------------------------
+    # RAVALEMENT (ENDUITS)
+    # ------------------------------------------------------------------
+    support = (support_key or "").upper()
+    if surf_pioch > 0:
+        if "PIERRE" in support or "MOELLON" in support or "CHAUX" in support:
+            add_line(
+                "RAVALEMENT",
+                "Enduit de façade à la chaux",
+                surf_pioch,
+                "m²",
+                170.0,
+                "Enduit traditionnel à la chaux adapté aux façades anciennes (pierre, moellons).",
+            )
+        else:
+            add_line(
+                "RAVALEMENT",
+                "Enduit monocouche de façade",
+                surf_pioch,
+                "m²",
+                75.0,
+                "Enduit monocouche projeté servant à la fois de protection et de finition décorative.",
+            )
+
+    # ------------------------------------------------------------------
+    # PEINTURE FAÇADE
+    # ------------------------------------------------------------------
+    # Impression + peinture pliolite sur toute la surface
+    add_line(
+        "PEINTURE",
+        "Impression de façade (sous-couche fixante)",
+        surface,
+        "m²",
+        19.0,
+        "Sous-couche pour homogénéiser le support et améliorer l'adhérence de la peinture.",
+    )
+    add_line(
+        "PEINTURE",
+        "Peinture de façade pliolite (2 couches)",
+        surface,
+        "m²",
+        46.0,
+        "Peinture de façade résistante aux intempéries, appliquée en deux couches.",
+    )
+
+    # ------------------------------------------------------------------
+    # OUVERTURES / MENUISERIES / GARDE-CORPS
+    # ------------------------------------------------------------------
+    # Seules les grandes fenêtres sont prises en compte
+    nb_fenetres_grandes = int(options.get("nb_fenetres_grandes", 0))
+    # surface boiseries approximative : 1,5 m² par grande fenêtre
+    surf_boiseries = nb_fenetres_grandes * 1.5
+
+    if surf_boiseries > 0:
+        # Protection menuiseries
+        add_line(
+            "FINITIONS",
+            "Protection des menuiseries (films et rubans adhésifs)",
+            surf_boiseries,
+            "m²",
+            4.0,
+            "Protection des fenêtres et portes par adhésif ou film plastique avant peinture.",
         )
-        total += m
-
-    surface_reprise_enduit = float(options.get("surface_reprises_enduit_detectee", 0.0) or 0.0)
-    if surface_reprise_enduit > 0:
-        pu = PRIX_POINTS["reprise_enduit_m2"]
-        m = surface_reprise_enduit * pu
-        lignes.append(
-            {
-                "code": "MAC_RE",
-                "designation": "Reprises ponctuelles d’enduit",
-                "quantite": round(surface_reprise_enduit, 1),
-                "unite": "m2",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "RAVALEMENT",
-            }
+        # Peinture boiseries
+        add_line(
+            "PEINTURE",
+            "Peinture des boiseries (volets, encadrements)",
+            surf_boiseries,
+            "m²",
+            38.0,
+            "Préparation et peinture des éléments en bois visibles en façade.",
         )
-        total += m
 
-    ml_micro = float(options.get("ml_microfissures", 0.0) or 0.0)
-    if ml_micro > 0:
-        pu = PRIX_POINTS["microfissure_ml"]
-        m = ml_micro * pu
-        lignes.append(
-            {
-                "code": "MAC_MICRO",
-                "designation": "Traitement des microfissures (≤ 2 mm)",
-                "quantite": round(ml_micro, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "RAVALEMENT",
-            }
-        )
-        total += m
+    # Garde-corps
+    ml_gc = float(options.get("ml_garde_corps_fer_forge", 0.0) or 0.0)
+    add_line(
+        "PEINTURE",
+        "Peinture des garde-corps métalliques",
+        ml_gc,
+        "ml",
+        42.0,
+        "Décapage léger, antirouille et peinture des garde-corps en métal.",
+    )
 
-    ml_fiss = float(options.get("ml_fissures_ouvertes", 0.0) or 0.0)
-    if ml_fiss > 0:
-        pu = PRIX_POINTS["fissure_ouverte_ml"]
-        m = ml_fiss * pu
-        lignes.append(
-            {
-                "code": "MAC_FISS",
-                "designation": "Traitement des fissures ouvertes (> 2 mm)",
-                "quantite": round(ml_fiss, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "RAVALEMENT",
-            }
-        )
-        total += m
+    # Ferronnerie ancienne : on considère qu'environ 30 % des garde-corps sont plus complexes
+    ml_ferr = ml_gc * 0.3
+    add_line(
+        "PEINTURE",
+        "Rénovation de ferronneries anciennes complexes",
+        ml_ferr,
+        "ml",
+        66.0,
+        "Traitement anticorrosion et peinture des éléments en ferronnerie décorative ancienne.",
+    )
 
-    # 4) Fenêtres / peinture menuiseries
-    nb_fen_p = int(options.get("nb_fenetres_petites", 0) or 0)
-    if nb_fen_p > 0:
-        pu = PRIX_POINTS["fenetre_petite"]
-        m = nb_fen_p * pu
-        lignes.append(
-            {
-                "code": "FEN_P",
-                "designation": "Fenêtres petites (préparation + peinture)",
-                "quantite": nb_fen_p,
-                "unite": "u",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "PEINTURE",
-            }
-        )
-        total += m
-
-    nb_fen_g = int(options.get("nb_fenetres_grandes", 0) or 0)
-    if nb_fen_g > 0:
-        pu = PRIX_POINTS["fenetre_grande"]
-        m = nb_fen_g * pu
-        lignes.append(
-            {
-                "code": "FEN_G",
-                "designation": "Fenêtres grandes / portes-fenêtres (préparation + peinture)",
-                "quantite": nb_fen_g,
-                "unite": "u",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "PEINTURE",
-            }
-        )
-        total += m
-
-    # 5) Garde-corps / zinguerie
-    ml_gc_fer = float(options.get("ml_garde_corps_fer_forge", 0.0) or 0.0)
-    if ml_gc_fer > 0:
-        pu = PRIX_POINTS["garde_corps_fer_forge_ml"]
-        m = ml_gc_fer * pu
-        lignes.append(
-            {
-                "code": "GC_FER",
-                "designation": "Garde-corps fer forgé",
-                "quantite": round(ml_gc_fer, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "ZINGUERIE",
-            }
-        )
-        total += m
-
-    ml_gc_balcon = float(options.get("ml_garde_corps_balcon", 0.0) or 0.0)
-    if ml_gc_balcon > 0:
-        pu = PRIX_POINTS["garde_corps_balcon_ml"]
-        m = ml_gc_balcon * pu
-        lignes.append(
-            {
-                "code": "GC_BALC",
-                "designation": "Balcons avec garde-corps",
-                "quantite": round(ml_gc_balcon, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "ZINGUERIE",
-            }
-        )
-        total += m
-
-    ml_dep = float(options.get("ml_descente_ep", 0.0) or 0.0)
-    if ml_dep > 0:
-        pu = PRIX_POINTS["descente_ep_ml"]
-        m = ml_dep * pu
-        lignes.append(
-            {
-                "code": "DEP",
-                "designation": "Descentes d’eaux pluviales",
-                "quantite": round(ml_dep, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "ZINGUERIE",
-            }
-        )
-        total += m
+    # ------------------------------------------------------------------
+    # ZINGUERIE (optionnelle pour l'instant, valeurs souvent à 0)
+    # ------------------------------------------------------------------
+    ml_couvertine = float(options.get("ml_couvertine", 0.0) or 0.0)
+    add_line(
+        "ZINGUERIE",
+        "Fourniture et pose de couvertines",
+        ml_couvertine,
+        "ml",
+        150.0,
+        "Profilés zinc ou alu protégeant le dessus des murs et acrotères contre les infiltrations.",
+    )
 
     ml_bandeaux = float(options.get("ml_bandeaux", 0.0) or 0.0)
-    if ml_bandeaux > 0:
-        pu = PRIX_POINTS["bandeau_ml"]
-        m = ml_bandeaux * pu
-        lignes.append(
-            {
-                "code": "BAND",
-                "designation": "Bandeaux / corniches",
-                "quantite": round(ml_bandeaux, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "ZINGUERIE",
-            }
-        )
-        total += m
-
-    ml_zing = float(options.get("ml_zinguerie", 0.0) or 0.0)
-    if ml_zing > 0:
-        pu = PRIX_POINTS["zinguerie_ml"]
-        m = ml_zing * pu
-        lignes.append(
-            {
-                "code": "ZINC",
-                "designation": "Éléments de zinguerie (tablettes, couvertines…)",
-                "quantite": round(ml_zing, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "ZINGUERIE",
-            }
-        )
-        total += m
-
-    nb_grilles = int(options.get("nb_grilles_aeration", 0) or 0)
-    if nb_grilles > 0:
-        pu = PRIX_POINTS["grille_aeration_u"]
-        m = nb_grilles * pu
-        lignes.append(
-            {
-                "code": "GRIL",
-                "designation": "Grilles d’aération / ventilation",
-                "quantite": nb_grilles,
-                "unite": "u",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "RAVALEMENT",
-            }
-        )
-        total += m
-
-    ml_grillage_prot = float(options.get("ml_grillage_protection", 0.0) or 0.0)
-    if ml_grillage_prot > 0:
-        pu = PRIX_POINTS["grillage_protection_ml"]
-        m = ml_grillage_prot * pu
-        lignes.append(
-            {
-                "code": "GRILL_PROT",
-                "designation": "Grillage de protection (pied d’immeuble)",
-                "quantite": round(ml_grillage_prot, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "INSTALLATION",
-            }
-        )
-        total += m
-
-    ml_grillage_galva = float(options.get("ml_grillage_galva", 0.0) or 0.0)
-    if ml_grillage_galva > 0:
-        pu = PRIX_POINTS["grillage_galva_ml"]
-        m = ml_grillage_galva * pu
-        lignes.append(
-            {
-                "code": "GRILL_GALV",
-                "designation": "Garde-corps grillagés galvanisés",
-                "quantite": round(ml_grillage_galva, 1),
-                "unite": "ml",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "ZINGUERIE",
-            }
-        )
-        total += m
-
-    # 6) Chiens-assis (peinture et reprises locales)
-    if traiter_chiens_assis and nb_chiens_assis > 0:
-        pu = PRIX_POINTS["chien_assis_u"]
-        m = nb_chiens_assis * pu
-        lignes.append(
-            {
-                "code": "CHIENS_ASSIS",
-                "designation": "Chiens-assis / lucarnes (préparation + peinture)",
-                "quantite": nb_chiens_assis,
-                "unite": "u",
-                "pu": round(pu, 2),
-                "montant": round(m, 2),
-                "famille": "PEINTURE",
-            }
-        )
-        total += m
-
-    # 7) Nettoyage forfaitaire
-    montant_nettoyage = total * 0.01
-    lignes.append(
-        {
-            "code": "NETTOYAGE",
-            "designation": "Nettoyage final et repli de chantier",
-            "quantite": 1,
-            "unite": "forfait",
-            "pu": round(montant_nettoyage, 2),
-            "montant": round(montant_nettoyage, 2),
-            "famille": "NETTOYAGE",
-        }
+    add_line(
+        "ZINGUERIE",
+        "Habillage zinc des bandeaux et corniches",
+        ml_bandeaux,
+        "ml",
+        178.0,
+        "Habillage des bandeaux / corniches en zinc pour les protéger durablement.",
     )
-    total += montant_nettoyage
 
-    return lignes, round(total, 2)
+    ml_descente = float(options.get("ml_descente_ep", 0.0) or 0.0)
+    add_line(
+        "ZINGUERIE",
+        "Remplacement / reprise des descentes d'eaux pluviales",
+        ml_descente,
+        "ml",
+        165.0,
+        "Reprise des tuyaux d'évacuation d'eau de pluie le long de la façade.",
+    )
+
+    # ------------------------------------------------------------------
+    # CHIENS-ASSIS & NETTOYAGE
+    # ------------------------------------------------------------------
+    if options.get("traiter_chiens_assis"):
+        nb_chiens = int(options.get("nb_chiens_assis", 0))
+        add_line(
+            "FINITIONS",
+            "Rénovation de chiens-assis (lucarnes en toiture)",
+            nb_chiens,
+            "u",
+            280.0,
+            "Rénovation des petites lucarnes en toiture (bardage, peinture et étanchéité périphérique).",
+        )
+
+        # Complément d'échafaudage équivalent à un étage pour accéder aux chiens-assis
+        surface_par_etage = surface / float(niveaux)
+        add_line(
+            "PREPARATION",
+            "Complément d'échafaudage pour accès chiens-assis",
+            surface_par_etage,
+            "m²",
+            39.0,
+            "Surépaisseur d'échafaudage nécessaire pour accéder aux chiens-assis.",
+        )
+
+    # Nettoyage fin de chantier
+    add_line(
+        "FINITIONS",
+        "Nettoyage complet de fin de chantier",
+        1,
+        "forfait",
+        350.0,
+        "Remise en état des abords : retrait des protections, gravats et nettoyage du trottoir.",
+    )
+
+    return lignes, total_ttc
