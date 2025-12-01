@@ -5,7 +5,7 @@ from apis import build_streetview_embed_url
 
 
 def init_css() -> None:
-    """Applique un style sobre (inspiration Apple) à l'app."""
+    """Style général (sobre, lisible)."""
     st.markdown(
         """
         <style>
@@ -41,9 +41,7 @@ def init_css() -> None:
 def render_address_step() -> bool:
     """
     Étape adresse : l'utilisateur saisit l'adresse.
-    Geocoding à réaliser côté apis.py (geocode_address).
-    Ici, on se contente de demander l'adresse et on laisse apis/geocoding existant
-    remplir st.session_state.coords et st.session_state.addr_label si besoin.
+    Le geocoding est géré dans apis.py, ici on stocke l'adresse.
     """
     st.markdown('<div class="lc-card">', unsafe_allow_html=True)
     st.subheader("Adresse du chantier")
@@ -57,7 +55,7 @@ def render_address_step() -> bool:
     st.markdown(
         "<p style='font-size:0.9rem;color:#555;'>"
         "Saisissez l'adresse du bâtiment à ravaler. "
-        "L'étape suivante vous permettra de préciser les dimensions de la façade."
+        "Vous préciserez les dimensions et l'état de la façade aux étapes suivantes."
         "</p>",
         unsafe_allow_html=True,
     )
@@ -68,10 +66,7 @@ def render_address_step() -> bool:
         if not addr:
             st.error("Merci de renseigner une adresse.")
         else:
-            # On stocke simplement l'adresse saisie.
             st.session_state.addr_label = addr
-            # Les coordonnées (lat/lon) doivent être définies côté apis/geocoding.
-            # Si ce n'est pas fait, l'affichage Street View utilisera les infos disponibles.
             ok = True
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -88,8 +83,8 @@ def render_map_and_form(
     **form_kwargs: Any,
 ) -> Any:
     """
-    Affiche la Street View à gauche (si possible) et le formulaire à droite.
-    Sur mobile, les colonnes s'empilent naturellement.
+    Affiche la Street View à gauche et le formulaire à droite.
+    Sur mobile, les colonnes s'empilent.
     """
     coords = st.session_state.get("coords")
 
@@ -173,7 +168,7 @@ def render_building_dimensions_form(osm_ctx: Dict) -> Optional[Dict]:
     has_pignon = st.checkbox(
         "Inclure une façade latérale (pignon) dans le ravalement",
         value=False,
-        help="Cochez si une façade latérale donnant sur l'extérieur doit aussi être ravallée.",
+        help="Cochez si une façade latérale donnant sur l'extérieur doit aussi être ravalée.",
     )
 
     dims = {
@@ -221,6 +216,23 @@ def render_facade_state_form(osm_ctx: Dict) -> Optional[Dict]:
         }.get(x, x),
     )
 
+    st.markdown("### Aspect final souhaité")
+
+    solution_ravalement = st.radio(
+        "Type de ravalement souhaité",
+        options=["PEINTURE", "ENDUIT_SANS_PEINTURE"],
+        index=0,
+        format_func=lambda x: (
+            "Façade peinte (impression + peinture)" if x == "PEINTURE"
+            else "Façade enduite / sans peinture (enduit teinté)"
+        ),
+        help=(
+            "Pour une façade enduite ou en béton :\n"
+            "- Façade peinte : conservation d'un système peinture.\n"
+            "- Façade enduite / sans peinture : piochage plus important et enduit teinté, sans finition peinture."
+        ),
+    )
+
     st.markdown("### Ouvertures et garde-corps")
 
     nb_fenetres_grandes = st.number_input(
@@ -262,6 +274,7 @@ def render_facade_state_form(osm_ctx: Dict) -> Optional[Dict]:
     facade_state = {
         "etat_facade": etat_facade,
         "support_key": support_key,
+        "solution_ravalement": solution_ravalement,
         "nb_fenetres_grandes": int(nb_fenetres_grandes),
         "garde_corps_niveau": garde_corps_niveau,
         "traiter_chiens_assis": bool(traiter_chiens_assis),
@@ -302,7 +315,6 @@ def render_contact_form(osm_ctx: Dict = None) -> Optional[Dict]:
         "urgent": bool(urgent),
     }
 
-    # On ne valide pas ici : c'est géré dans app.py (bouton désactivé si pas d'email / nom)
     return contact
 
 
