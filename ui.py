@@ -1,30 +1,355 @@
-streamlit.errors.StreamlitValueBelowMinError: This app has encountered an error. The original error message is redacted to prevent data leaks. Full error details have been recorded in the logs (if you're on Streamlit Cloud, click on 'Manage app' in the lower right of your app).
+import streamlit as st
+from typing import Any, Callable, Dict, Optional
 
-Traceback:
-File "/mount/src/estimateur-facade-libertv2/app.py", line 667, in <module>
-    main()
-    ~~~~^^
-File "/mount/src/estimateur-facade-libertv2/app.py", line 405, in main
-    dims = ui.render_map_and_form(GOOGLE_API_KEY, ui.render_building_dimensions_form, osm_ctx)
-File "/mount/src/estimateur-facade-libertv2/ui.py", line 110, in render_map_and_form
-    out = form_func(osm_ctx or {}, **form_kwargs)
-File "/mount/src/estimateur-facade-libertv2/ui.py", line 159, in render_building_dimensions_form
+from apis import build_streetview_embed_url
+
+
+def init_css() -> None:
+    """Style général (sobre, lisible)."""
+    st.markdown(
+        """
+        <style>
+        .lc-card {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 1.2rem 1.4rem;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+            margin-bottom: 1rem;
+        }
+        .lc-bandeau-prix {
+            position: sticky;
+            bottom: 0;
+            z-index: 999;
+            background: #0B2239;
+            color: #ffffff;
+            padding: 0.7rem 1.2rem;
+            border-radius: 12px;
+            margin-top: 0.8rem;
+        }
+        .lc-bandeau-prix small {
+            color: #cbd5f5;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ----------------------------------------------------------------------
+# Étape 0 : adresse
+# ----------------------------------------------------------------------
+def render_address_step() -> bool:
+    """
+    Étape adresse : l'utilisateur saisit l'adresse.
+    Le geocoding est géré dans app.py, ici on stocke juste l'adresse.
+    """
+    st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+    st.subheader("Adresse du chantier")
+
+    addr = st.text_input(
+        "Adresse",
+        value=st.session_state.get("addr_label", "") or "",
+        placeholder="Ex. : 15 rue Brézin, 75014 Paris",
+    )
+
+    st.markdown(
+        "<p style='font-size:0.9rem;color:#555;'>"
+        "Saisissez l'adresse du bâtiment à ravaler. "
+        "Vous préciserez les dimensions et l'état de la façade aux étapes suivantes."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    ok = False
+    if st.button("Valider l'adresse et continuer", type="primary"):
+        addr = (addr or "").strip()
+        if not addr:
+            st.error("Merci de renseigner une adresse.")
+        else:
+            st.session_state.addr_label = addr
+            ok = True
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    return ok
+
+
+# ----------------------------------------------------------------------
+# Wrapper : Street View + formulaire
+# ----------------------------------------------------------------------
+def render_map_and_form(
+    google_api_key: Optional[str],
+    form_func: Callable[..., Any],
+    osm_ctx: Optional[Dict] = None,
+    **form_kwargs: Any,
+) -> Any:
+    """
+    Affiche la Street View à gauche et le formulaire à droite.
+    Sur mobile, les colonnes s'empilent.
+    """
+    coords = st.session_state.get("coords")
+
+    col_map, col_form = st.columns([1, 1.2])
+
+    # Colonne gauche : façade (Street View)
+    with col_map:
+        st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+        st.markdown("**Votre façade**", unsafe_allow_html=True)
+
+        if coords and google_api_key:
+            iframe_url = build_streetview_embed_url(coords["lat"], coords["lon"], google_api_key)
+            if iframe_url:
+                st.markdown(
+                    f'<iframe src="{iframe_url}" width="100%" height="320" '
+                    f'style="border:0;border-radius:14px;" '
+                    f'allowfullscreen loading="lazy"></iframe>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info("Street View n'est pas disponible pour cette adresse.")
+        else:
+            st.info("La vue Street View apparaîtra ici après la géolocalisation de l'adresse.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Colonne droite : formulaire
+    with col_form:
+        st.markdown('<div class="lc-card">', unsafe_allow_html=True)
+        out = form_func(osm_ctx or {}, **form_kwargs)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    return out
+
+
+# ----------------------------------------------------------------------
+# Étape 1 : dimensions du bâtiment
+# ----------------------------------------------------------------------
+def render_building_dimensions_form(osm_ctx: Dict) -> Optional[Dict]:
+    """
+    Formulaire des dimensions principales.
+    On recadre les valeurs par défaut pour respecter les min/max de Streamlit.
+    """
+    st.subheader("Dimensions de la façade")
+
+    building_type = st.radio(
+        "Type de bâtiment",
+        options=["IMMEUBLE", "PAVILLON"],
+        index=0,
+        format_func=lambda x: "Immeuble" if x == "IMMEUBLE" else "Pavillon / maison",
+    )
+
+    col_niv, col_hpn = st.columns(2)
+    with col_niv:
+        niveaux_default = int(osm_ctx.get("levels") or 5)
+        niveaux_default = max(1, min(niveaux_default, 15))
+        niveaux = st.number_input(
+            "Nombre de niveaux (étages)",
+            min_value=1,
+            max_value=15,
+            value=niveaux_default,
+            step=1,
+        )
+    with col_hpn:
+        hauteur_par_niveau = st.number_input(
+            "Hauteur moyenne par niveau (m)",
+            min_value=2.5,
+            max_value=4.0,
+            value=3.0,
+            step=0.1,
+        )
+
+    # Largeur façade rue
+    raw_largeur = float(osm_ctx.get("front_length_m", 15.0) or 15.0)
+    largeur_default = max(1.0, min(raw_largeur, 200.0))
+    largeur = st.number_input(
+        "Largeur de la façade principale (sur rue) en mètres",
+        min_value=1.0,
+        max_value=200.0,
+        value=largeur_default,
+        step=0.5,
+        help="Longueur approximative de la façade côté rue.",
+    )
+
+    # Profondeur : forcer dans [5 ; 80] pour éviter StreamlitValueBelowMinError
+    raw_profondeur = float(osm_ctx.get("depth_m", 12.0) or 12.0)
+    profondeur_default = max(5.0, min(raw_profondeur, 80.0))
     profondeur = st.number_input(
         "Profondeur approximative du bâtiment (m)",
-    ...<4 lines>...
+        min_value=5.0,
+        max_value=80.0,
+        value=profondeur_default,
+        step=0.5,
         help="Utilisé pour un éventuel pignon ou un pavillon complet.",
     )
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/metrics_util.py", line 447, in wrapped_func
-    result = non_optional_func(*args, **kwargs)
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/widgets/number_input.py", line 399, in number_input
-    return self._number_input(
-           ~~~~~~~~~~~~~~~~~~^
-        label=label,
-        ^^^^^^^^^^^^
-    ...<15 lines>...
-        ctx=ctx,
-        ^^^^^^^^
+
+    has_pignon = st.checkbox(
+        "Inclure une façade latérale (pignon) dans le ravalement",
+        value=False,
+        help="Cochez si une façade latérale donnant sur l'extérieur doit aussi être ravalée.",
     )
-    ^
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/widgets/number_input.py", line 542, in _number_input
-    raise StreamlitValueBelowMinError(value=value, min_value=min_value)
+
+    dims = {
+        "building_type": building_type,
+        "niveaux": int(niveaux),
+        "hauteur_par_niveau": float(hauteur_par_niveau),
+        "largeur": float(largeur),
+        "profondeur": float(profondeur),
+        "has_pignon": bool(has_pignon),
+    }
+
+    return dims
+
+
+# ----------------------------------------------------------------------
+# Étape 2 : état de façade, ouvertures, garde-corps, chiens-assis
+# ----------------------------------------------------------------------
+def render_facade_state_form(osm_ctx: Dict) -> Optional[Dict]:
+    st.subheader("État de la façade et éléments particuliers")
+
+    etat_facade = st.radio(
+        "État général de la façade",
+        options=["bon", "moyen", "dégradé"],
+        index=1,
+        format_func=lambda x: x.capitalize(),
+        help="Permet d'estimer la part de préparation (piochage, reprises...).",
+    )
+
+    support_key = st.selectbox(
+        "Type de support principal",
+        options=[
+            "ENDUIT_CIMENT",
+            "ENDUIT_PLATRE",
+            "BETON",
+            "BRIQUE",
+            "PIERRE",
+        ],
+        index=0,
+        format_func=lambda x: {
+            "ENDUIT_CIMENT": "Enduit ciment (façade récente)",
+            "ENDUIT_PLATRE": "Enduit plâtre (façade ancienne)",
+            "BETON": "Béton peint",
+            "BRIQUE": "Brique",
+            "PIERRE": "Pierre / moellons",
+        }.get(x, x),
+    )
+
+    st.markdown("### Aspect final souhaité")
+
+    solution_ravalement = st.radio(
+        "Type de ravalement souhaité",
+        options=["PEINTURE", "ENDUIT_SANS_PEINTURE"],
+        index=0,
+        format_func=lambda x: (
+            "Façade peinte (impression + peinture)" if x == "PEINTURE"
+            else "Façade enduite / sans peinture (enduit teinté)"
+        ),
+        help=(
+            "Pour une façade enduite ou en béton :\n"
+            "- Façade peinte : conservation d'un système peinture.\n"
+            "- Façade enduite / sans peinture : piochage plus important et enduit teinté, sans finition peinture."
+        ),
+    )
+
+    st.markdown("### Ouvertures et garde-corps")
+
+    nb_fenetres_grandes = st.number_input(
+        "Nombre approximatif de grandes fenêtres donnant sur la façade",
+        min_value=0,
+        max_value=200,
+        value=10,
+        step=1,
+        help="Seules les grandes fenêtres sont prises en compte (hors petites ouvertures techniques).",
+    )
+
+    garde_corps_niveau = st.radio(
+        "Présence de garde-corps / balcons",
+        options=["peu", "moyen", "beaucoup"],
+        index=1,
+        format_func=lambda x: {
+            "peu": "Peu de garde-corps",
+            "moyen": "Quelques garde-corps",
+            "beaucoup": "Beaucoup de garde-corps",
+        }[x],
+    )
+
+    st.markdown("### Toiture et chiens-assis")
+
+    traiter_chiens_assis = st.checkbox(
+        "Inclure les chiens-assis (lucarnes en toiture)",
+        value=False,
+    )
+    nb_chiens_assis = 0
+    if traiter_chiens_assis:
+        nb_chiens_assis = st.number_input(
+            "Nombre approximatif de chiens-assis à traiter",
+            min_value=1,
+            max_value=50,
+            value=2,
+            step=1,
+        )
+
+    facade_state = {
+        "etat_facade": etat_facade,
+        "support_key": support_key,
+        "solution_ravalement": solution_ravalement,
+        "nb_fenetres_grandes": int(nb_fenetres_grandes),
+        "garde_corps_niveau": garde_corps_niveau,
+        "traiter_chiens_assis": bool(traiter_chiens_assis),
+        "nb_chiens_assis": int(nb_chiens_assis),
+    }
+
+    return facade_state
+
+
+# ----------------------------------------------------------------------
+# Étape 3 : coordonnées client
+# ----------------------------------------------------------------------
+def render_contact_form(osm_ctx: Dict = None) -> Optional[Dict]:
+    st.subheader("Vos coordonnées")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        nom = st.text_input("Nom / Prénom", value=st.session_state.get("contact_nom", ""))
+    with col2:
+        email = st.text_input("Adresse e-mail", value=st.session_state.get("contact_email", ""))
+
+    tel = st.text_input("Téléphone (facultatif)", value=st.session_state.get("contact_tel", ""))
+
+    delai_mois = st.number_input(
+        "Délai souhaité avant travaux (en mois)",
+        min_value=1,
+        max_value=36,
+        value=6,
+        step=1,
+    )
+    urgent = delai_mois <= 3
+
+    contact = {
+        "nom": nom.strip(),
+        "email": email.strip(),
+        "tel": tel.strip(),
+        "delai_mois": int(delai_mois),
+        "urgent": bool(urgent),
+    }
+
+    return contact
+
+
+# ----------------------------------------------------------------------
+# Affichage bandeau prix (preview)
+# ----------------------------------------------------------------------
+def render_price_banner(total_ttc: Optional[float], label: str) -> None:
+    """
+    Bandeau bas de page avec le prix estimatif.
+    """
+    if total_ttc is None:
+        return
+
+    txt = f"{total_ttc:,.0f} € TTC".replace(",", " ").replace(".", ",")
+    st.markdown(
+        f"""
+        <div class="lc-bandeau-prix">
+            <div><b>{label}</b> : {txt}</div>
+            <small>Montant indicatif à confirmer après visite sur place.</small>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
