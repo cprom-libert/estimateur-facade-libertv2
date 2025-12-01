@@ -137,7 +137,10 @@ def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
         step=0.1,
     )
 
+    # Largeur : clamp >= 3 m
     largeur_rue_default = osm_ctx.get("facade_rue_m") or 15.0
+    if largeur_rue_default < 3.0:
+        largeur_rue_default = 3.0
     largeur = st.number_input(
         "Largeur de la façade principale (m)",
         min_value=3.0,
@@ -146,12 +149,15 @@ def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
         step=0.5,
     )
 
-    profondeur_default = osm_ctx.get("depth_m") or largeur
+    # Profondeur : clamp >= 3 m
+    profondeur_raw = osm_ctx.get("depth_m") or largeur
+    if profondeur_raw < 3.0:
+        profondeur_raw = 3.0
     profondeur = st.number_input(
         "Profondeur estimée du bâtiment (m)",
         min_value=3.0,
         max_value=80.0,
-        value=float(round(profondeur_default, 1)),
+        value=float(round(profondeur_raw, 1)),
         step=0.5,
         help="Utilisé pour un éventuel pignon ou un pavillon complet.",
     )
@@ -182,6 +188,7 @@ def render_building_dimensions_form(osm_ctx: Dict) -> Dict:
         "has_shops": bool(has_shops),
         "shops_config": shops_config,
     }
+
 
 
 def render_facade_state_form(osm_ctx: Dict) -> Dict:
@@ -286,3 +293,4 @@ def render_contact_form() -> Dict:
         "delai_mois": int(delai_mois),
         "urgent": bool(urgent),
     }
+
