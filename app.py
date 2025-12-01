@@ -41,11 +41,14 @@ def init_state() -> None:
             st.session_state[k] = v
 
 
+# ----------------------------------------------------------------------
+# PDF
+# ----------------------------------------------------------------------
 def generate_pdf_estimation(
     addr_label: str,
     geom: Geometry,
     lignes: List[Dict],
-    total: float,
+    total_ttc: float,
     facade_state: Dict,
     dims: Dict,
     zone_choice: str,
@@ -55,33 +58,50 @@ def generate_pdf_estimation(
     try:
         from fpdf import FPDF
     except ImportError:
-        st.info("Module 'fpdf2' non installé : le PDF ne sera pas généré.")
+        st.info("Module 'fpdf' non installé : le PDF ne sera pas généré.")
         return None
 
     def safe(text: str) -> str:
         if text is None:
             text = ""
         repl = {
-            "–": "-", "—": "-", "•": "-", "·": "-",
-            "²": "2", "³": "3",
+            "–": "-",
+            "—": "-",
+            "•": "-",
+            "·": "-",
+            "²": "2",
+            "³": "3",
             "°": " deg",
             "€": "EUR",
-            "’": "'", "‘": "'", "“": '"', "”": '"',
-            "«": '"', "»": '"',
+            "’": "'",
+            "‘": "'",
+            "“": '"',
+            "”": '"',
+            "«": '"',
+            "»": '"',
             "…": "...",
-            "é": "e", "è": "e", "ê": "e", "ë": "e",
-            "à": "a", "â": "a",
-            "ù": "u", "û": "u",
-            "î": "i", "ï": "i",
-            "ô": "o", "ö": "o",
+            "é": "e",
+            "è": "e",
+            "ê": "e",
+            "ë": "e",
+            "à": "a",
+            "â": "a",
+            "ù": "u",
+            "û": "u",
+            "î": "i",
+            "ï": "i",
+            "ô": "o",
+            "ö": "o",
             "ç": "c",
         }
         for k, v in repl.items():
             text = text.replace(k, v)
         return text.encode("latin-1", "replace").decode("latin-1")
 
-    def fmt_eur(v: float) -> str:
-        return f"{v:,.2f} EUR HT".replace(",", " ").replace(".", ",")
+    def fmt_eur_ttc(v: float) -> str:
+        return f"{v:,.2f} EUR TTC".replace(",", " ").replace(".", ",")
+
+    total_ht = total_ttc / 1.2
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -111,7 +131,7 @@ def generate_pdf_estimation(
     pdf.multi_cell(
         190,
         6,
-        safe(f"Zone de ravalement estimée : {zone_choice.replace('+', ' + ')}"),
+        safe(f"Zone estimée : {zone_choice.replace('+', ' + ')}"),
     )
     pdf.multi_cell(190, 6, safe(f"Surface estimée de façades : {geom.surface_facades:.1f} m2"))
     pdf.multi_cell(190, 6, safe(f"Hauteur estimée : {geom.hauteur:.1f} m"))
@@ -122,22 +142,15 @@ def generate_pdf_estimation(
     pdf.multi_cell(190, 6, safe(f"État de façade renseigné : {etat_facade}"))
     pdf.multi_cell(190, 6, safe(f"Support principal : {support_key}"))
 
-    has_shops = dims.get("has_shops", False)
-    shops_config = dims.get("shops_config", "aucune")
-    if has_shops:
-        mapping = {
-            "une_boutique_toute_longueur": "Une boutique presque sur toute la longueur (hors porte/porte cochère)",
-            "deux_boutiques": "Deux boutiques principales",
-            "autre_configuration": "Configuration mixte boutiques / logements",
-        }
-        txt_shop = mapping.get(shops_config, shops_config)
-        pdf.ln(3)
-        pdf.multi_cell(190, 6, safe(f"Boutiques en rez-de-chaussée : {txt_shop}"))
-
     pdf.ln(5)
     pdf.set_font("Helvetica", "B", 12)
-    pdf.multi_cell(190, 7, safe(f"Montant estimatif indicatif : {fmt_eur(total)}"))
+    pdf.multi_cell(190, 7, safe(f"Montant estimatif indicatif : {fmt_eur_ttc(total_ttc)}"))
     pdf.set_font("Helvetica", "", 9)
+    pdf.multi_cell(
+        190,
+        5,
+        safe(f"(Equivalent ~ {total_ht:,.2f} EUR HT)".replace(",", " ").replace(".", ",")),
+    )
     pdf.ln(2)
     pdf.multi_cell(
         190,
@@ -148,19 +161,14 @@ def generate_pdf_estimation(
         ),
     )
 
-    pdf.ln(6)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(190, 7, safe("Détail estimatif par grandes familles de postes"), ln=1)
-    pdf.set_font("Helvetica", "", 9)
-
+    # Regroupement par familles
     familles_labels = {
         "INSTALLATION": "Installation de chantier",
-        "PROTECTION": "Protections",
-        "ECHAUFAUDAGE": "Échafaudage",
-        "RAVALEMENT": "Travaux de ravalement et maçonneries",
-        "ZINGUERIE": "Zinguerie, garde-corps et éléments métalliques",
-        "PEINTURE": "Peinture menuiseries / chiens-assis",
-        "NETTOYAGE": "Nettoyage et fin de chantier",
+        "PREPARATION": "Préparation et protections",
+        "RAVALEMENT": "Travaux de ravalement",
+        "PEINTURE": "Peinture façades / menuiseries / métallerie",
+        "ZINGUERIE": "Zinguerie",
+        "FINITIONS": "Finitions et nettoyage",
     }
 
     fam_totaux: Dict[str, float] = {k: 0.0 for k in familles_labels.keys()}
@@ -178,16 +186,17 @@ def generate_pdf_estimation(
         if montant_fam <= 0:
             continue
 
-        pdf.ln(3)
+        pdf.ln(4)
         pdf.set_font("Helvetica", "B", 10)
-        pdf.multi_cell(190, 6, safe(f"{fam_label} – {fmt_eur(montant_fam)}"))
+        pdf.multi_cell(190, 6, safe(f"{fam_label} – {fmt_eur_ttc(montant_fam)}"))
         pdf.set_font("Helvetica", "", 9)
 
         for l in famille_lignes[fam_code]:
             q = l["quantite"]
             u = l["unite"]
             m = l["montant"]
-            txt = f"- {l['designation']} ({q} {u}) : {m:.2f} EUR HT"
+            txt = f"- {l['designation']} ({q} {u}) : {m:,.2f} EUR TTC"
+            txt = txt.replace(",", " ").replace(".", ",")
             pdf.multi_cell(190, 4, safe(txt))
 
     pdf.ln(8)
@@ -214,6 +223,104 @@ def generate_pdf_estimation(
         return None
 
 
+# ----------------------------------------------------------------------
+# Calcul géométrie + options
+# ----------------------------------------------------------------------
+def compute_geometry_and_options(
+    dims: Dict,
+    facade_state: Dict,
+    zone_choice: str,
+    osm_ctx: Dict,
+) -> (Geometry, Dict, str):
+    """
+    Calcule la géométrie et les options pour build_pricing.
+    """
+    niveaux = dims.get("niveaux", 5)
+    hpn = dims.get("hauteur_par_niveau", 3.0)
+    hauteur = niveaux * hpn
+
+    largeur_rue = dims.get("largeur", 15.0)
+    largeur_cour = osm_ctx.get("facade_cour_m") or largeur_rue
+    profondeur = dims.get("profondeur") or osm_ctx.get("depth_m") or largeur_rue
+
+    building_type = dims.get("building_type", "IMMEUBLE")
+    has_pignon = bool(dims.get("has_pignon", False))
+
+    if building_type == "PAVILLON":
+        if zone_choice == "rue":
+            surface = hauteur * largeur_rue
+            perimetre = largeur_rue
+            nb_facades = 1
+        elif zone_choice == "cour":
+            surface = hauteur * largeur_cour
+            perimetre = largeur_cour
+            nb_facades = 1
+        else:
+            perimetre = 2 * (largeur_rue + profondeur)
+            surface = hauteur * perimetre
+            nb_facades = 4
+    else:
+        surface = 0.0
+        perimetre = 0.0
+        nb_facades = 0
+
+        if zone_choice in ("rue", "rue+cour"):
+            surface += hauteur * largeur_rue
+            perimetre += largeur_rue
+            nb_facades += 1
+
+        if zone_choice in ("cour", "rue+cour"):
+            surface += hauteur * largeur_cour
+            perimetre += largeur_cour
+            nb_facades += 1
+
+        if has_pignon:
+            surface += hauteur * profondeur
+            perimetre += profondeur
+            nb_facades += 1
+
+    geom = Geometry(
+        hauteur=float(hauteur),
+        surface_facades=float(surface),
+        perimetre=float(perimetre),
+        nb_facades=int(max(nb_facades, 1)),
+    )
+
+    # Options pour pricing
+    options: Dict = {}
+    options["is_haussmann"] = bool(osm_ctx.get("is_haussmann_suspected", False))
+    options["niveaux"] = niveaux
+
+    # Seules les grandes fenêtres comptent
+    options["nb_fenetres_grandes"] = int(facade_state.get("nb_fenetres_grandes", 0))
+
+    # Garde-corps : estimation simple sur le périmètre
+    garde_corps_niveau = facade_state.get("garde_corps_niveau", "moyen")
+    if garde_corps_niveau == "peu":
+        ml_gc = perimetre * 0.2
+    elif garde_corps_niveau == "beaucoup":
+        ml_gc = perimetre * 0.8
+    else:
+        ml_gc = perimetre * 0.5
+    options["ml_garde_corps_fer_forge"] = ml_gc
+
+    options["traiter_chiens_assis"] = bool(facade_state.get("traiter_chiens_assis", False))
+    options["nb_chiens_assis"] = int(facade_state.get("nb_chiens_assis", 0))
+
+    # Zinguerie : par défaut, 0 (à ajuster manuellement plus tard si besoin)
+    options["ml_couvertine"] = 0.0
+    options["ml_bandeaux"] = 0.0
+    options["ml_descente_ep"] = 0.0
+
+    etat_facade = facade_state.get("etat_facade", "moyen")
+    support_key = facade_state.get("support_key", "ENDUIT_CIMENT")
+
+    return geom, options, etat_facade, support_key
+
+
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
 def main() -> None:
     init_state()
 
@@ -222,39 +329,38 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     st.markdown(
-        "<p style='color:#555; margin-bottom:1.5rem;'>Un ordre de grandeur indicatif pour votre ravalement, "
-        "à confirmer après visite sur place.</p>",
+        "<p style='color:#555; margin-bottom:1.5rem;'>"
+        "Un ordre de grandeur indicatif pour votre ravalement de façade, à confirmer après visite sur place."
+        "</p>",
         unsafe_allow_html=True,
     )
 
     step = st.session_state.step
 
+    # ------------------------------------------------------------------
     # Étape 0 – Adresse
+    # ------------------------------------------------------------------
     if step == 0:
         ok = ui.render_address_step()
         if ok:
-            coords = st.session_state.coords
+            # Geocoding côté apis / front : on tente d'obtenir un contexte OSM
+            coords = st.session_state.get("coords")
             if coords:
                 ctx = fetch_osm_context(coords["lat"], coords["lon"])
                 st.session_state.osm_ctx = ctx
-
-                # Recentrage éventuel sur le centre du bâtiment OSM
-                center_lat = ctx.get("center_lat")
-                center_lon = ctx.get("center_lon")
-                if center_lat is not None and center_lon is not None:
-                    st.session_state.coords = {"lat": center_lat, "lon": center_lon}
-
             st.session_state.step = 1
             st.rerun()
         return
 
     coords = st.session_state.get("coords")
     if not coords:
-        st.session_state.step = 0
-        st.rerun()
-        return
+        # Si on n'a pas de coordonnées, on peut tout de même continuer sans Street View ni OSM
+        st.warning("Géolocalisation non disponible. L'estimation se fera sans Street View ni données OSM.")
+        st.session_state.osm_ctx = st.session_state.osm_ctx or {}
 
-    # Étape 1 – Dimensions + zone (rue / cour / rue+cour)
+    # ------------------------------------------------------------------
+    # Étape 1 – Dimensions
+    # ------------------------------------------------------------------
     if step == 1:
         osm_ctx = st.session_state.osm_ctx or {}
         dims = ui.render_map_and_form(GOOGLE_API_KEY, ui.render_building_dimensions_form, osm_ctx)
@@ -274,43 +380,27 @@ def main() -> None:
             index=["rue", "cour", "rue+cour"].index(zone_default),
             format_func=lambda z: zone_labels[z],
         )
-
-        # Aperçu rapide de la surface de façades (base de calcul)
-        niveaux = dims.get("niveaux", 5)
-        hpn = dims.get("hauteur_par_niveau", 3.0)
-        hauteur = niveaux * hpn
-
-        largeur_rue = dims.get("largeur", 15.0)
-        largeur_cour = osm_ctx.get("facade_cour_m") or largeur_rue
-        profondeur = dims.get("profondeur") or osm_ctx.get("depth_m") or largeur_rue
-        building_type = dims.get("building_type", "IMMEUBLE")
-        has_pignon = bool(dims.get("has_pignon", False))
-
-        if building_type == "PAVILLON":
-            if zone_choice == "rue":
-                surface_preview = hauteur * largeur_rue
-            elif zone_choice == "cour":
-                surface_preview = hauteur * largeur_cour
-            else:
-                surface_preview = hauteur * 2 * (largeur_rue + profondeur)
-        else:
-            surface_preview = 0.0
-            if zone_choice in ("rue", "rue+cour"):
-                surface_preview += hauteur * largeur_rue
-            if zone_choice in ("cour", "rue+cour"):
-                surface_preview += hauteur * largeur_cour
-            if has_pignon:
-                surface_preview += hauteur * profondeur
-
-        st.markdown(
-            f"<p style='font-size:0.95rem; color:#333;'>"
-            f"Hauteur estimée : <b>{hauteur:.1f} m</b><br>"
-            f"Surface approximative de façades (selon votre choix) : "
-            f"<b>{surface_preview:.1f} m²</b></p>",
-            unsafe_allow_html=True,
-        )
-
         st.markdown("</div>", unsafe_allow_html=True)
+
+        # Preview prix étape 1 (hypothèses standard : support ciment, état moyen)
+        facade_state_preview = {
+            "etat_facade": "moyen",
+            "support_key": "ENDUIT_CIMENT",
+            "nb_fenetres_grandes": 0,
+            "garde_corps_niveau": "moyen",
+            "traiter_chiens_assis": False,
+            "nb_chiens_assis": 0,
+        }
+        geom_preview, options_preview, etat_prev, support_prev = compute_geometry_and_options(
+            dims, facade_state_preview, zone_choice, osm_ctx
+        )
+        lignes_prev, total_ttc_preview = build_pricing(
+            geom=geom_preview,
+            support_key=support_prev,
+            options=options_preview,
+            etat_facade=etat_prev,
+        )
+        ui.render_price_banner(total_ttc_preview, "Estimation provisoire")
 
         col_next, col_back = st.columns([1, 1])
         with col_next:
@@ -325,12 +415,33 @@ def main() -> None:
                 st.rerun()
         return
 
-    # Étape 2 – État / points singuliers
+    # ------------------------------------------------------------------
+    # Étape 2 – État de façade / éléments
+    # ------------------------------------------------------------------
     if step == 2:
         osm_ctx = st.session_state.osm_ctx or {}
+        dims = st.session_state.building_dims or {}
+        if not dims:
+            st.session_state.step = 1
+            st.rerun()
+            return
+
         facade_state = ui.render_map_and_form(GOOGLE_API_KEY, ui.render_facade_state_form, osm_ctx)
         if facade_state is None:
             return
+
+        # Preview prix étape 2 (plus précise)
+        zone_choice = st.session_state.get("zone_choice", "rue")
+        geom_prev, options_prev, etat_prev, support_prev = compute_geometry_and_options(
+            dims, facade_state, zone_choice, osm_ctx
+        )
+        _, total_ttc_prev = build_pricing(
+            geom=geom_prev,
+            support_key=support_prev,
+            options=options_prev,
+            etat_facade=etat_prev,
+        )
+        ui.render_price_banner(total_ttc_prev, "Estimation actualisée")
 
         col_next, col_back = st.columns([1, 1])
         with col_next:
@@ -344,14 +455,34 @@ def main() -> None:
                 st.rerun()
         return
 
-    # Étape 3 – Coordonnées + déclenchement du calcul
+    # ------------------------------------------------------------------
+    # Étape 3 – Coordonnées
+    # ------------------------------------------------------------------
     if step == 3:
-        contact = ui.render_map_and_form(GOOGLE_API_KEY, ui.render_contact_form)
+        osm_ctx = st.session_state.osm_ctx or {}
+        dims = st.session_state.building_dims or {}
+        facade_state = st.session_state.facade_state or {}
+        zone_choice = st.session_state.get("zone_choice", "rue")
+
+        # Petite preview avant coordonnées
+        geom_prev, options_prev, etat_prev, support_prev = compute_geometry_and_options(
+            dims, facade_state, zone_choice, osm_ctx
+        )
+        _, total_ttc_prev = build_pricing(
+            geom=geom_prev,
+            support_key=support_prev,
+            options=options_prev,
+            etat_facade=etat_prev,
+        )
+
+        contact = ui.render_map_and_form(GOOGLE_API_KEY, ui.render_contact_form, osm_ctx)
         if contact is None:
             return
 
+        ui.render_price_banner(total_ttc_prev, "Estimation actuelle")
+
         disabled = not contact.get("email") or not contact.get("nom")
-        if st.button("Calculer l’estimation et recevoir le PDF", type="primary", disabled=disabled):
+        if st.button("Calculer l’estimation détaillée et recevoir le PDF", type="primary", disabled=disabled):
             st.session_state.contact = contact
             st.session_state.step = 4
             st.rerun()
@@ -360,103 +491,31 @@ def main() -> None:
             st.rerun()
         return
 
-    # Étape 4 – Calcul, affichage, email, PDF
+    # ------------------------------------------------------------------
+    # Étape 4 – Résultat final, email, PDF
+    # ------------------------------------------------------------------
     if step == 4:
-        coords = st.session_state.coords
+        coords = st.session_state.get("coords")
         osm_ctx = st.session_state.osm_ctx or {}
         dims = st.session_state.building_dims or {}
         facade_state = st.session_state.facade_state or {}
         contact = st.session_state.contact or {}
         zone_choice = st.session_state.get("zone_choice", "rue")
 
-        # Géométrie simple et lisible, cohérente avec la pratique métier
-        niveaux = dims.get("niveaux", 5)
-        hpn = dims.get("hauteur_par_niveau", 3.0)
-        hauteur = niveaux * hpn
+        if not dims or not facade_state or not contact:
+            st.session_state.step = 0
+            st.rerun()
+            return
 
-        largeur_rue = dims.get("largeur", 15.0)
-        largeur_cour = osm_ctx.get("facade_cour_m") or largeur_rue
-        profondeur = dims.get("profondeur") or osm_ctx.get("depth_m") or largeur_rue
-
-        building_type = dims.get("building_type", "IMMEUBLE")
-        has_pignon = bool(dims.get("has_pignon", False))
-
-        # Calcul de la surface de façades et d’un périmètre utile pour l’échafaudage
-        if building_type == "PAVILLON":
-            if zone_choice == "rue":
-                surface = hauteur * largeur_rue
-                perimetre = largeur_rue
-                nb_facades = 1
-            elif zone_choice == "cour":
-                surface = hauteur * largeur_cour
-                perimetre = largeur_cour
-                nb_facades = 1
-            else:
-                perimetre = 2 * (largeur_rue + profondeur)
-                surface = hauteur * perimetre
-                nb_facades = 4
-        else:
-            surface = 0.0
-            perimetre = 0.0
-            nb_facades = 0
-
-            if zone_choice in ("rue", "rue+cour"):
-                surface += hauteur * largeur_rue
-                perimetre += largeur_rue
-                nb_facades += 1
-
-            if zone_choice in ("cour", "rue+cour"):
-                surface += hauteur * largeur_cour
-                perimetre += largeur_cour
-                nb_facades += 1
-
-            if has_pignon:
-                surface += hauteur * profondeur
-                perimetre += profondeur
-                nb_facades += 1
-
-        geom = Geometry(
-            hauteur=float(hauteur),
-            surface_facades=float(surface),
-            perimetre=float(perimetre),
-            nb_facades=int(nb_facades),
+        geom, options, etat_facade, support_key = compute_geometry_and_options(
+            dims, facade_state, zone_choice, osm_ctx
         )
 
-        options: Dict = {}
-        options["is_haussmann"] = bool(osm_ctx.get("is_haussmann_suspected", False))
-        options["niveaux"] = niveaux
-
-        options["nb_fenetres_petites"] = facade_state.get("nb_fenetres_petites", 0)
-        options["nb_fenetres_grandes"] = facade_state.get("nb_fenetres_grandes", 0)
-        options["traiter_chiens_assis"] = facade_state.get("traiter_chiens_assis", False)
-        options["nb_chiens_assis"] = facade_state.get("nb_chiens_assis", 0)
-
-        garde_corps_niveau = facade_state.get("garde_corps_niveau", "moyen")
-        if garde_corps_niveau == "peu":
-            ml_gc = perimetre * 0.2
-        elif garde_corps_niveau == "beaucoup":
-            ml_gc = perimetre * 0.8
-        else:
-            ml_gc = perimetre * 0.5
-        options["ml_garde_corps_fer_forge"] = ml_gc
-
-        # Pas d’invention sur les autres points
-        options["surface_reprises_lourdes_detectee"] = 0.0
-        options["surface_reprises_enduit_detectee"] = 0.0
-        options["ml_microfissures"] = 0.0
-        options["ml_fissures_ouvertes"] = 0.0
-        options["ml_descente_ep"] = 0.0
-        options["ml_bandeaux"] = 0.0
-        options["ml_zinguerie"] = 0.0
-        options["nb_grilles_aeration"] = 0
-        options["ml_grillage_protection"] = 0.0
-        options["ml_grillage_galva"] = 0.0
-
-        lignes, total_ht = build_pricing(
+        lignes, total_ttc = build_pricing(
             geom=geom,
-            support_key=facade_state.get("support_key", "ENDUIT_CIMENT"),
+            support_key=support_key,
             options=options,
-            etat_facade=facade_state.get("etat_facade", "moyen"),
+            etat_facade=etat_facade,
         )
 
         st.success("Estimation calculée (indicative, à confirmer après visite sur place).")
@@ -464,18 +523,20 @@ def main() -> None:
         col_map, col_res = st.columns([1, 1.3])
 
         with col_map:
-            iframe = build_streetview_embed_url(coords["lat"], coords["lon"], GOOGLE_API_KEY)
             st.markdown('<div class="lc-card">', unsafe_allow_html=True)
             st.markdown(f"<b>Adresse :</b><br>{st.session_state.addr_label}", unsafe_allow_html=True)
-            st.markdown(
-                f'<iframe src="{iframe}" width="100%" height="300" style="border:0;border-radius:14px;" allowfullscreen loading="lazy"></iframe>',
-                unsafe_allow_html=True,
-            )
+            if coords and GOOGLE_API_KEY:
+                iframe = build_streetview_embed_url(coords["lat"], coords["lon"], GOOGLE_API_KEY)
+                st.markdown(
+                    f'<iframe src="{iframe}" width="100%" height="300" style="border:0;border-radius:14px;" '
+                    f'allowfullscreen loading="lazy"></iframe>',
+                    unsafe_allow_html=True,
+                )
             st.markdown("</div>", unsafe_allow_html=True)
 
         with col_res:
             st.markdown('<div class="lc-card">', unsafe_allow_html=True)
-            total_txt = f"{total_ht:,.2f} € HT".replace(",", " ").replace(".", ",")
+            total_txt = f"{total_ttc:,.0f} € TTC".replace(",", " ").replace(".", ",")
             st.markdown("<b>Montant estimatif indicatif :</b>", unsafe_allow_html=True)
             st.markdown(
                 f"<p style='font-size:1.4rem; font-weight:700; color:#0B2239;'>{total_txt}</p>",
@@ -485,39 +546,48 @@ def main() -> None:
                 f"<p style='font-size:0.9rem; color:#555;'>"
                 f"Surface de façades prise en compte : <b>{geom.surface_facades:.1f} m²</b><br>"
                 f"Hauteur estimée : <b>{geom.hauteur:.1f} m</b><br>"
-                f"(Montant à confirmer après visite sur place.)</p>",
+                f"(Montant indicatif à confirmer après visite sur place.)</p>",
                 unsafe_allow_html=True,
             )
 
-            st.markdown("<b>Grandes familles de postes :</b>", unsafe_allow_html=True)
+            # Détail par familles + lignes
             fam_labels = {
                 "INSTALLATION": "Installation de chantier",
-                "PROTECTION": "Protections",
-                "ECHAUFAUDAGE": "Échafaudage",
-                "RAVALEMENT": "Ravalement / maçonneries",
-                "ZINGUERIE": "Zinguerie / garde-corps",
-                "PEINTURE": "Peinture menuiseries / chiens-assis",
-                "NETTOYAGE": "Nettoyage / fin de chantier",
+                "PREPARATION": "Préparation et protections",
+                "RAVALEMENT": "Travaux de ravalement",
+                "PEINTURE": "Peinture façades / menuiseries / métallerie",
+                "ZINGUERIE": "Zinguerie",
+                "FINITIONS": "Finitions et nettoyage",
             }
             fam_totaux = {k: 0.0 for k in fam_labels.keys()}
+            fam_lines: Dict[str, List[Dict]] = {k: [] for k in fam_labels.keys()}
+
             for l in lignes:
                 fam = l.get("famille", "")
-                if fam in fam_totaux:
+                if fam in fam_labels:
                     fam_totaux[fam] += float(l.get("montant", 0.0) or 0.0)
+                    fam_lines[fam].append(l)
 
             for code, label in fam_labels.items():
                 montant = fam_totaux.get(code, 0.0)
                 if montant <= 0:
                     continue
-                txt = f"{label} : {montant:,.2f} € HT".replace(",", " ").replace(".", ",")
-                st.markdown(f"- {txt}")
+                txt = f"{label} : {montant:,.0f} € TTC".replace(",", " ").replace(".", ",")
+                st.markdown(f"### {txt}")
+                for l in fam_lines[code]:
+                    q = l["quantite"]
+                    u = l["unite"]
+                    m = l["montant"]
+                    line_txt = f"- {l['designation']} ({q} {u}) : {m:,.0f} € TTC"
+                    line_txt = line_txt.replace(",", " ").replace(".", ",")
+                    st.markdown(line_txt)
             st.markdown("</div>", unsafe_allow_html=True)
 
         pdf_bytes = generate_pdf_estimation(
             addr_label=st.session_state.addr_label,
             geom=geom,
             lignes=lignes,
-            total=total_ht,
+            total_ttc=total_ttc,
             facade_state=facade_state,
             dims=dims,
             zone_choice=zone_choice,
@@ -525,13 +595,14 @@ def main() -> None:
             osm_ctx=osm_ctx,
         )
 
+        # Email
         if SMTP_CONF["host"] and SMTP_CONF["user"] and contact.get("email"):
             try:
                 send_estimation_email(
                     smtp_conf=SMTP_CONF,
                     contact=contact,
                     addr_label=st.session_state.addr_label,
-                    total_ht=total_ht,
+                    total_ttc=total_ttc,
                     pdf_bytes=pdf_bytes,
                 )
                 st.info("L’estimation a été envoyée par e-mail (copie à contact@libertsas.fr).")
