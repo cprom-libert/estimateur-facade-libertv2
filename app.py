@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 from typing import Dict, List, Optional
 
@@ -233,21 +232,23 @@ def main() -> None:
 
     # Étape 0 – Adresse
     if step == 0:
-    ok = ui.render_address_step()
-    if ok:
-        coords = st.session_state.coords
-        if coords:
-            ctx = fetch_osm_context(coords["lat"], coords["lon"])
-            st.session_state.osm_ctx = ctx
-            # On recale la carte / Street View sur le centre du bâtiment OSM
-            center_lat = ctx.get("center_lat")
-            center_lon = ctx.get("center_lon")
-            if center_lat is not None and center_lon is not None:
-                st.session_state.coords = {"lat": center_lat, "lon": center_lon}
-        st.session_state.step = 1
-        st.rerun()
-    return
+        ok = ui.render_address_step()
+        if ok:
+            coords = st.session_state.coords
+            if coords:
+                # Appel OSM
+                ctx = fetch_osm_context(coords["lat"], coords["lon"])
+                st.session_state.osm_ctx = ctx
 
+                # Si disponible, on recale la carte sur le centre du bâtiment
+                center_lat = ctx.get("center_lat")
+                center_lon = ctx.get("center_lon")
+                if center_lat is not None and center_lon is not None:
+                    st.session_state.coords = {"lat": center_lat, "lon": center_lon}
+
+            st.session_state.step = 1
+            st.rerun()
+        return
 
     coords = st.session_state.get("coords")
     if not coords:
@@ -508,4 +509,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
