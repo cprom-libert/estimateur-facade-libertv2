@@ -1,4 +1,5 @@
 import streamlit as st
+import requests
 from typing import Dict, List, Optional, Tuple
 
 from apis import fetch_osm_context, build_streetview_embed_url
@@ -39,6 +40,34 @@ def init_state() -> None:
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+# ----------------------------------------------------------------------
+# Géocodage Google à partir de l'adresse
+# ----------------------------------------------------------------------
+def geocode_address(address: str) -> Optional[Dict[str, float]]:
+    """
+    Geocode l'adresse via l'API Google Geocoding.
+    Retourne {"lat": float, "lon": float} ou None si échec.
+    """
+    addr = (address or "").strip()
+    if not addr or not GOOGLE_API_KEY:
+        return None
+
+    try:
+        url = (
+            "https://maps.googleapis.com/maps/api/geocode/json"
+            f"?address={requests.utils.quote(addr)}&key={GOOGLE_API_KEY}"
+        )
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        if data.get("status") == "OK" and data.get("results"):
+            loc = data["results"][0]["geometry"]["location"]
+            return {"lat": float(loc["lat"]), "lon": float(loc["lng"])}
+    except Exception:
+        return None
+
+    return None
 
 
 # ----------------------------------------------------------------------
@@ -349,10 +378,16 @@ def main() -> None:
     if step == 0:
         ok = ui.render_address_step()
         if ok:
-            coords = st.session_state.get("coords")
+            addr = st.session_state.get("addr_label") or ""
+            coords = geocode_address(addr)
             if coords:
+                st.session_state.coords = coords
                 ctx = fetch_osm_context(coords["lat"], coords["lon"])
                 st.session_state.osm_ctx = ctx
+            else:
+                st.warning("Géolocalisation non disponible. L'estimation se fera sans Street View ni données OSM.")
+                st.session_state.coords = None
+                st.session_state.osm_ctx = {}
             st.session_state.step = 1
             st.rerun()
         return
@@ -386,7 +421,7 @@ def main() -> None:
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Preview prix étape 1 (hypothèses standard : support ciment, état moyen, peinture)
+        # Preview prix étape 1 (hypothèses standard)
         facade_state_preview = {
             "etat_facade": "moyen",
             "support_key": "ENDUIT_CIMENT",
