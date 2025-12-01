@@ -153,7 +153,6 @@ def generate_pdf_estimation(
     pdf.cell(190, 7, safe("Détail estimatif par grandes familles de postes"), ln=1)
     pdf.set_font("Helvetica", "", 9)
 
-    # Regroupement par familles
     familles_labels = {
         "INSTALLATION": "Installation de chantier",
         "PROTECTION": "Protections",
@@ -236,11 +235,10 @@ def main() -> None:
         if ok:
             coords = st.session_state.coords
             if coords:
-                # Appel OSM
                 ctx = fetch_osm_context(coords["lat"], coords["lon"])
                 st.session_state.osm_ctx = ctx
 
-                # Si disponible, on recale la carte sur le centre du bâtiment
+                # Recentrage éventuel sur le centre du bâtiment OSM
                 center_lat = ctx.get("center_lat")
                 center_lon = ctx.get("center_lon")
                 if center_lat is not None and center_lon is not None:
@@ -276,6 +274,42 @@ def main() -> None:
             index=["rue", "cour", "rue+cour"].index(zone_default),
             format_func=lambda z: zone_labels[z],
         )
+
+        # Aperçu rapide de la surface de façades (base de calcul)
+        niveaux = dims.get("niveaux", 5)
+        hpn = dims.get("hauteur_par_niveau", 3.0)
+        hauteur = niveaux * hpn
+
+        largeur_rue = dims.get("largeur", 15.0)
+        largeur_cour = osm_ctx.get("facade_cour_m") or largeur_rue
+        profondeur = dims.get("profondeur") or osm_ctx.get("depth_m") or largeur_rue
+        building_type = dims.get("building_type", "IMMEUBLE")
+        has_pignon = bool(dims.get("has_pignon", False))
+
+        if building_type == "PAVILLON":
+            if zone_choice == "rue":
+                surface_preview = hauteur * largeur_rue
+            elif zone_choice == "cour":
+                surface_preview = hauteur * largeur_cour
+            else:
+                surface_preview = hauteur * 2 * (largeur_rue + profondeur)
+        else:
+            surface_preview = 0.0
+            if zone_choice in ("rue", "rue+cour"):
+                surface_preview += hauteur * largeur_rue
+            if zone_choice in ("cour", "rue+cour"):
+                surface_preview += hauteur * largeur_cour
+            if has_pignon:
+                surface_preview += hauteur * profondeur
+
+        st.markdown(
+            f"<p style='font-size:0.95rem; color:#333;'>"
+            f"Hauteur estimée : <b>{hauteur:.1f} m</b><br>"
+            f"Surface approximative de façades (selon votre choix) : "
+            f"<b>{surface_preview:.1f} m²</b></p>",
+            unsafe_allow_html=True,
+        )
+
         st.markdown("</div>", unsafe_allow_html=True)
 
         col_next, col_back = st.columns([1, 1])
@@ -335,6 +369,7 @@ def main() -> None:
         contact = st.session_state.contact or {}
         zone_choice = st.session_state.get("zone_choice", "rue")
 
+        # Géométrie simple et lisible, cohérente avec la pratique métier
         niveaux = dims.get("niveaux", 5)
         hpn = dims.get("hauteur_par_niveau", 3.0)
         hauteur = niveaux * hpn
@@ -346,29 +381,40 @@ def main() -> None:
         building_type = dims.get("building_type", "IMMEUBLE")
         has_pignon = bool(dims.get("has_pignon", False))
 
+        # Calcul de la surface de façades et d’un périmètre utile pour l’échafaudage
         if building_type == "PAVILLON":
             if zone_choice == "rue":
+                surface = hauteur * largeur_rue
                 perimetre = largeur_rue
                 nb_facades = 1
             elif zone_choice == "cour":
+                surface = hauteur * largeur_cour
                 perimetre = largeur_cour
                 nb_facades = 1
             else:
                 perimetre = 2 * (largeur_rue + profondeur)
+                surface = hauteur * perimetre
                 nb_facades = 4
         else:
-            if zone_choice == "rue":
-                perimetre = largeur_rue + (profondeur if has_pignon else 0)
-                nb_facades = 1 + (1 if has_pignon else 0)
-            elif zone_choice == "cour":
-                perimetre = largeur_cour + (profondeur if has_pignon else 0)
-                nb_facades = 1 + (1 if has_pignon else 0)
-            else:
-                base = largeur_rue + largeur_cour
-                perimetre = base + (profondeur if has_pignon else 0)
-                nb_facades = 2 + (1 if has_pignon else 0)
+            surface = 0.0
+            perimetre = 0.0
+            nb_facades = 0
 
-        surface = hauteur * perimetre
+            if zone_choice in ("rue", "rue+cour"):
+                surface += hauteur * largeur_rue
+                perimetre += largeur_rue
+                nb_facades += 1
+
+            if zone_choice in ("cour", "rue+cour"):
+                surface += hauteur * largeur_cour
+                perimetre += largeur_cour
+                nb_facades += 1
+
+            if has_pignon:
+                surface += hauteur * profondeur
+                perimetre += profondeur
+                nb_facades += 1
+
         geom = Geometry(
             hauteur=float(hauteur),
             surface_facades=float(surface),
@@ -436,7 +482,10 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
             st.markdown(
-                "<p style='font-size:0.9rem; color:#555;'>Ce montant reste indicatif et devra être confirmé après visite sur place.</p>",
+                f"<p style='font-size:0.9rem; color:#555;'>"
+                f"Surface de façades prise en compte : <b>{geom.surface_facades:.1f} m²</b><br>"
+                f"Hauteur estimée : <b>{geom.hauteur:.1f} m</b><br>"
+                f"(Montant à confirmer après visite sur place.)</p>",
                 unsafe_allow_html=True,
             )
 
