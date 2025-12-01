@@ -1,5 +1,5 @@
 import streamlit as st
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from apis import fetch_osm_context, build_streetview_embed_url
 from pricing import Geometry, build_pricing
@@ -138,9 +138,13 @@ def generate_pdf_estimation(
 
     etat_facade = facade_state.get("etat_facade", "moyen")
     support_key = facade_state.get("support_key", "").replace("_", " ").title()
+    sol = facade_state.get("solution_ravalement", "PEINTURE")
+    sol_txt = "Façade peinte" if sol == "PEINTURE" else "Enduit complet sans peinture"
+
     pdf.ln(3)
     pdf.multi_cell(190, 6, safe(f"État de façade renseigné : {etat_facade}"))
     pdf.multi_cell(190, 6, safe(f"Support principal : {support_key}"))
+    pdf.multi_cell(190, 6, safe(f"Solution de ravalement : {sol_txt}"))
 
     pdf.ln(5)
     pdf.set_font("Helvetica", "B", 12)
@@ -161,7 +165,6 @@ def generate_pdf_estimation(
         ),
     )
 
-    # Regroupement par familles
     familles_labels = {
         "INSTALLATION": "Installation de chantier",
         "PREPARATION": "Préparation et protections",
@@ -231,7 +234,7 @@ def compute_geometry_and_options(
     facade_state: Dict,
     zone_choice: str,
     osm_ctx: Dict,
-) -> (Geometry, Dict, str):
+) -> Tuple[Geometry, Dict, str, str]:
     """
     Calcule la géométrie et les options pour build_pricing.
     """
@@ -307,10 +310,13 @@ def compute_geometry_and_options(
     options["traiter_chiens_assis"] = bool(facade_state.get("traiter_chiens_assis", False))
     options["nb_chiens_assis"] = int(facade_state.get("nb_chiens_assis", 0))
 
-    # Zinguerie : par défaut, 0 (à ajuster manuellement plus tard si besoin)
+    # Zinguerie : par défaut, 0 (à ajuster plus tard si besoin)
     options["ml_couvertine"] = 0.0
     options["ml_bandeaux"] = 0.0
     options["ml_descente_ep"] = 0.0
+
+    # Solution de ravalement (peinture ou enduit sans peinture)
+    options["solution_ravalement"] = facade_state.get("solution_ravalement", "PEINTURE")
 
     etat_facade = facade_state.get("etat_facade", "moyen")
     support_key = facade_state.get("support_key", "ENDUIT_CIMENT")
@@ -343,7 +349,6 @@ def main() -> None:
     if step == 0:
         ok = ui.render_address_step()
         if ok:
-            # Geocoding côté apis / front : on tente d'obtenir un contexte OSM
             coords = st.session_state.get("coords")
             if coords:
                 ctx = fetch_osm_context(coords["lat"], coords["lon"])
@@ -354,7 +359,6 @@ def main() -> None:
 
     coords = st.session_state.get("coords")
     if not coords:
-        # Si on n'a pas de coordonnées, on peut tout de même continuer sans Street View ni OSM
         st.warning("Géolocalisation non disponible. L'estimation se fera sans Street View ni données OSM.")
         st.session_state.osm_ctx = st.session_state.osm_ctx or {}
 
@@ -382,10 +386,11 @@ def main() -> None:
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Preview prix étape 1 (hypothèses standard : support ciment, état moyen)
+        # Preview prix étape 1 (hypothèses standard : support ciment, état moyen, peinture)
         facade_state_preview = {
             "etat_facade": "moyen",
             "support_key": "ENDUIT_CIMENT",
+            "solution_ravalement": "PEINTURE",
             "nb_fenetres_grandes": 0,
             "garde_corps_niveau": "moyen",
             "traiter_chiens_assis": False,
@@ -394,7 +399,7 @@ def main() -> None:
         geom_preview, options_preview, etat_prev, support_prev = compute_geometry_and_options(
             dims, facade_state_preview, zone_choice, osm_ctx
         )
-        lignes_prev, total_ttc_preview = build_pricing(
+        _, total_ttc_preview = build_pricing(
             geom=geom_preview,
             support_key=support_prev,
             options=options_preview,
@@ -430,7 +435,6 @@ def main() -> None:
         if facade_state is None:
             return
 
-        # Preview prix étape 2 (plus précise)
         zone_choice = st.session_state.get("zone_choice", "rue")
         geom_prev, options_prev, etat_prev, support_prev = compute_geometry_and_options(
             dims, facade_state, zone_choice, osm_ctx
@@ -464,7 +468,6 @@ def main() -> None:
         facade_state = st.session_state.facade_state or {}
         zone_choice = st.session_state.get("zone_choice", "rue")
 
-        # Petite preview avant coordonnées
         geom_prev, options_prev, etat_prev, support_prev = compute_geometry_and_options(
             dims, facade_state, zone_choice, osm_ctx
         )
@@ -550,7 +553,6 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
-            # Détail par familles + lignes
             fam_labels = {
                 "INSTALLATION": "Installation de chantier",
                 "PREPARATION": "Préparation et protections",
@@ -595,7 +597,6 @@ def main() -> None:
             osm_ctx=osm_ctx,
         )
 
-        # Email
         if SMTP_CONF["host"] and SMTP_CONF["user"] and contact.get("email"):
             try:
                 send_estimation_email(
